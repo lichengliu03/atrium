@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,7 +26,7 @@ from .auth import AUTH_PATH, AuthMiddleware, auth
 from .auth import router as auth_router
 from .board import pages as board_pages
 from .capture import capture, unwrap_inherited
-from .config import UPLOADS_DIR, config
+from .config import CHATS_DIR, UPLOADS_DIR, config
 from .events import Subscriber, hub
 from .gitagent import set_view
 from .harness import all_harnesses, get_harness
@@ -75,6 +76,7 @@ async def lifespan(_app: FastAPI):
     sessions.on_turn_end.append(lambda project, sid: project.review and project.review.turn_ended(sid))
     sessions.start_background()
     transcript_watcher.start()
+    await _sweep_chats()
     for p in config.projects():
         if p["exists"] and not p.get("archived_at"):  # archived: loaded when opened
             try:
@@ -298,6 +300,85 @@ async def add_project(body: dict[str, Any] = Body(...)):
     return proj.describe()
 
 
+def _new_chat_dir() -> str:
+    """A new folder in CHATS_DIR, named for now: 2026-11-10-153012 (a second one in that second gets -2, -3…)."""
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d-%H%M%S")
+    n = 1
+    while True:
+        path = CHATS_DIR / (stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            n += 1
+
+
+@app.post("/api/chats")
+async def new_chat():
+    """New chat (home page): a project in a folder of its own, made in CHATS_DIR, as Codex does for a chat with no
+    project. No git: a scratch folder, where a big download mustn't be hashed into every turn's snapshot."""
+    path = await asyncio.to_thread(_new_chat_dir)
+    return projects.open(path).describe()
+
+
+def _chat_folder_empty(path: str) -> bool:
+    """Nothing in a chat's folder but Atrium's state (a git init is something), no agent in Atrium's record of them,
+    and nothing deleted into its trash."""
+    state = os.path.join(path, ".atrium")
+    try:
+        if set(os.listdir(path)) - {".atrium"}:
+            return False
+        if os.path.isdir(os.path.join(state, "trash")) and os.listdir(os.path.join(state, "trash")):
+            return False
+        with open(os.path.join(state, "agents.json")) as f:
+            meta = json.load(f)
+        return isinstance(meta, dict) and not meta.get("sessions")
+    except FileNotFoundError:  # no agents.json: no agent (or the folder is gone)
+        return True
+    except (OSError, ValueError):  # can't tell: kept
+        return False
+
+
+async def _chat_empty(path: str) -> bool:
+    """Nothing to keep in a chat: its folder is empty (``_chat_folder_empty``), and no session of any harness ran there,
+    from Atrium or from a CLI in its terminal. A harness that can't tell, or doesn't say within 20 s, keeps it."""
+    if not await asyncio.to_thread(_chat_folder_empty, path):
+        return False
+    try:
+        found = await asyncio.wait_for(asyncio.gather(*(h.has_sessions(path) for h in all_harnesses()), return_exceptions=True), 20)
+    except TimeoutError:
+        return False
+    return all(r is False for r in found)
+
+
+@app.delete("/api/chats/{pid}")
+async def discard_chat(pid: str, page: str | None = None):
+    """A chat left as it came (New chat, then elsewhere): it goes, folder and all, so that a click by mistake leaves
+    nothing behind. Not a pinned one, nor one with anything in it (``_chat_empty``), nor one another page has open
+    (``page``: the one leaving it), where something may be typed already: ``discarded`` false."""
+    entry = next((p for p in config.projects() if p["id"] == pid and p["chat"] and not p.get("pinned_at")), None)
+    if not entry or await terminals.running(pid) or not await _chat_empty(entry["path"]):
+        return {"discarded": False}
+    if _starting.get(pid) or hub.pages(f"open:{pid}") - {page}:  # last, with no await before _forget takes it off the list
+        return {"discarded": False}
+    await _forget(pid)
+    await asyncio.to_thread(shutil.rmtree, entry["path"], ignore_errors=True)
+    return {"discarded": True}
+
+
+async def _sweep_chats() -> None:
+    """At startup, the empty chats (``_chat_empty``) nobody opened for a day go: those left by closing the page, which
+    couldn't discard them. Not sooner: what was typed in one is kept by the browser, for when it is opened again."""
+    old = [p for p in config.projects()
+           if p["chat"] and not p.get("pinned_at") and time.time() - max(p.get("last_opened") or 0, p.get("added_at") or 0) > 86400]
+    for p, empty in zip(old, await asyncio.gather(*(_chat_empty(p["path"]) for p in old))):
+        if empty:
+            config.remove_project(p["id"])
+            await asyncio.to_thread(shutil.rmtree, p["path"], ignore_errors=True)
+            log.info("removed an empty chat, %s", p["path"])
+
+
 @app.patch("/api/projects/{pid}")
 async def mark_project(pid: str, body: dict[str, Any] = Body(...)):
     """Pin / unpin, archive / unarchive (home page)."""
@@ -316,17 +397,23 @@ async def mark_project(pid: str, body: dict[str, Any] = Body(...)):
     return out
 
 
-@app.delete("/api/projects/{pid}")
-async def remove_project(pid: str):
+async def _forget(pid: str) -> None:
+    """Off the list, and nothing of Atrium's goes on for it. Off the list first: then no agent can start there."""
     p = projects.forget(pid)
     if p and p.tracker:
         p.tracker.stop()
     w = _watchers.pop(pid, None)
     if w:
         w.stop()
+    transcript_watcher.remove_project(pid)
+    config.remove_project(pid)
     await terminals.close_project(pid)
     await capture.release_project(pid)
-    config.remove_project(pid)
+
+
+@app.delete("/api/projects/{pid}")
+async def remove_project(pid: str):
+    await _forget(pid)
     return {"ok": True}
 
 
@@ -372,7 +459,7 @@ async def home():
     so the page shows them the way the rail does)."""
 
     async def one(entry: dict[str, Any]) -> dict[str, Any]:
-        out = {k: entry.get(k) for k in ("id", "path", "name", "exists", "last_opened", "open_count", "pinned_at", "archived_at")}
+        out = {k: entry.get(k) for k in ("id", "path", "name", "exists", "chat", "last_opened", "open_count", "pinned_at", "archived_at")}
         if not entry["exists"] or entry.get("archived_at"):
             return out
         try:
@@ -410,6 +497,9 @@ async def list_sessions(pid: str, archived: bool = False):
     return Response(await asyncio.to_thread(_json_bytes, {"rows": rows}, only="rows"), media_type="application/json")
 
 
+_starting: dict[str, int] = {}  # project id -> agents being started there: a chat isn't discarded under one
+
+
 @app.post("/api/p/{pid}/sessions")
 async def create_session(pid: str, body: dict[str, Any] = Body(...)):
     p = P(pid)
@@ -420,11 +510,15 @@ async def create_session(pid: str, body: dict[str, Any] = Body(...)):
         cwd = created["path"]
         transcript_watcher.add_project(p)
     attachments = [attachment_from_upload(a) for a in body.get("attachments") or []]
-    sid = await sessions.create(
-        p, name=body.get("name") or "", prompt=body.get("prompt") or None, harness_id=body.get("harness"),
-        cwd=cwd, model=body.get("model") or None, effort=body.get("effort") or None, mode=body.get("mode") or None,
-        attachments=attachments,
-    )
+    _starting[pid] = _starting.get(pid, 0) + 1
+    try:
+        sid = await sessions.create(
+            p, name=body.get("name") or "", prompt=body.get("prompt") or None, harness_id=body.get("harness"),
+            cwd=cwd, model=body.get("model") or None, effort=body.get("effort") or None, mode=body.get("mode") or None,
+            attachments=attachments,
+        )
+    finally:
+        _starting[pid] -= 1
     return {"id": sid, "cwd": cwd}
 
 
@@ -1102,6 +1196,7 @@ async def ws(socket: WebSocket):
                 hub.unsubscribe(sub, topic)
             elif op == "presence":
                 sub.active = bool(msg.get("active"))
+                sub.page = msg.get("page") or sub.page
             elif op == "ping":
                 await socket.send_json({"topic": "_", "type": "pong"})
     except (WebSocketDisconnect, RuntimeError):

@@ -16,6 +16,9 @@ class Socket {
   private everConnected = false;
   private active = pageActive();
   connected = false;
+  /** This page, to the server: a chat isn't discarded under a page that has it open (store.ts). Not crypto.randomUUID,
+   *  which needs https: a phone may reach Atrium over plain http. */
+  readonly page = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   constructor() {
     this.connect();
@@ -40,7 +43,7 @@ class Socket {
       this.connected = true;
       this.backoff = 500;
       for (const topic of this.handlers.keys()) ws.send(JSON.stringify({ op: "sub", topic }));
-      ws.send(JSON.stringify({ op: "presence", active: this.active }));
+      ws.send(JSON.stringify({ op: "presence", active: this.active, page: this.page }));
       if (this.everConnected) this.reconnectListeners.forEach((f) => f());
       this.everConnected = true;
     };

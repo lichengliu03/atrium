@@ -49,7 +49,7 @@ export interface Settings {
   sessions: { idle_close_minutes: number };
   tracker: { enabled: boolean; harness: string; model: string; effort: string; interval_seconds: number; after_turn_seconds: number };
   git_agent: { harness: string; model: string };
-  review_agent?: { auto: boolean; harness: string; model: string; effort: string; language: string; delay_seconds: number; max_concurrent: number };
+  review_agent?: { auto: boolean; chats: boolean; harness: string; model: string; effort: string; language: string; delay_seconds: number; max_concurrent: number };
   web: { serper_api_key: boolean; jina_api_key: boolean; replace_builtin_web_tools: boolean };
   // the composer's mic (chat/Voice.tsx): on once base_url and asr_model are set
   voice?: { base_url: string; api_key: boolean; asr_model: string; refine_model: string; refine_effort: string };
@@ -171,6 +171,7 @@ export interface Project {
   id: string;
   path: string;
   name: string;
+  chat?: boolean; // made by New chat, in ~/.atrium/chats
   exists?: boolean;
   last_opened?: number;
 }
@@ -256,6 +257,7 @@ export interface HomeProject {
   path: string;
   name: string;
   exists: boolean;
+  chat: boolean; // made by New chat, in ~/.atrium/chats
   last_opened: number | null;
   open_count: number | null; // times the human opened it (Frequent)
   pinned_at: number | null;
@@ -617,6 +619,15 @@ let loggedOut = () => location.assign(loginUrl());
 export const onLoggedOut = (f: () => void) => void (loggedOut = f);
 const checkLogin = (res: Response, data: any) => res.status === 401 && data?.code === "auth_required" && loggedOut();
 
+// A request found its project gone (removed from another page, a chat discarded there): the store leaves it, and
+// says why, which is also the request's error (whoever shows that shows the same words).
+let projectGone: (pid: string) => string | undefined = () => undefined;
+export const onProjectGone = (f: (pid: string) => string | undefined) => void (projectGone = f);
+const whyGone = (res: Response, data: any, url: string) => {
+  const pid = res.status === 404 && String(data?.error).startsWith("unknown project") && /^\/api\/p\/([^/?]+)/.exec(url)?.[1];
+  return pid ? projectGone(pid) : undefined;
+};
+
 async function req<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -632,7 +643,8 @@ async function req<T>(method: string, url: string, body?: unknown, signal?: Abor
     data = { error: text };
   }
   checkLogin(res, data);
-  if (!res.ok) throw new ApiError(res.status, data);
+  const why = whyGone(res, data, url);
+  if (!res.ok) throw new ApiError(res.status, why ? { ...data, error: why } : data);
   return data as T;
 }
 
@@ -684,6 +696,11 @@ export const api = {
   /** `create`: make the folder first (its parent must exist), git-initialised when `git`. */
   addProject: (path: string, create?: { git: boolean }) =>
     req<Project>("POST", "/api/projects", create ? { path, create: true, git: create.git } : { path }),
+  /** A chat: a project in a new folder of its own in ~/.atrium/chats, named for the time. */
+  newChat: () => req<Project>("POST", "/api/chats"),
+  /** A chat left as it came: it goes, folder and all, unless the server finds an agent or a file in it, or another
+   *  page than `page` (the one leaving it) has it open. */
+  discardChat: (pid: string, page: string) => req<{ discarded: boolean }>("DELETE", `/api/chats/${pid}${q({ page })}`),
   removeProject: (pid: string) => req("DELETE", `/api/projects/${pid}`),
   markProject: (pid: string, body: { pinned?: boolean; archived?: boolean }) => req("PATCH", `/api/projects/${pid}`, body),
   home: () => req<HomeProject[]>("GET", "/api/home"),

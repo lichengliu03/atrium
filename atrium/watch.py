@@ -28,7 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
-from anyio import to_thread
+from anyio import CapacityLimiter, to_thread
 from watchfiles import Change
 # Not watchfiles' public API (awatch drives these): pyproject.toml keeps watchfiles below 2.
 from watchfiles._rust_notify import RustNotify
@@ -58,6 +58,7 @@ _RETRY_FIRST, _RETRY_MAX = 60, 1800  # seconds before trying again after a failu
 
 
 def _project_filter(change: Change, path: str) -> bool:
+    """``path`` from the checkout holding it (``_in_checkout``): what is above the checkout doesn't count."""
     if any(p in path for p in _IGNORED_PARTS):
         return False
     if "/.atrium/" in path and "/.atrium/worktrees/" not in path:
@@ -73,6 +74,14 @@ def _project_filter(change: Change, path: str) -> bool:
 class _Plan(NamedTuple):
     dirs: list[str]  # to watch
     seen: frozenset[str]  # every directory the walk came across, watched or left out
+    roots: tuple[str, ...] = ()  # a project's checkouts: itself and its worktrees
+
+
+def _in_checkout(path: str, roots: tuple[str, ...]) -> str:
+    """``path`` from the checkout holding it, the deepest of ``roots`` (a worktree in the project's .atrium is a
+    checkout of its own), as "/rel": a chat is a project in ~/.atrium/chats, and that .atrium isn't its own."""
+    root = max((r for r in roots if path == r or path.startswith(r + os.sep)), key=len, default="")
+    return path[len(root):]
 
 
 _said: dict[str, str] = {}  # the last warning about something, not to repeat it at every plan
@@ -134,7 +143,7 @@ def _project_dirs(project: Project) -> _Plan:
     roots = project.roots()
     if _NATIVE_TREES:
         top = [r for r in roots if r == project.path or not r.startswith(project.path + os.sep)]
-        return _Plan(top, frozenset(top))
+        return _Plan(top, frozenset(top), tuple(roots))
     out: list[str] = []
     seen = set(roots)  # a worktree inside the project is walked as a checkout of its own, not as part of it
     for n, root in enumerate(roots, 1):
@@ -164,7 +173,7 @@ def _project_dirs(project: Project) -> _Plan:
         cut = (f"file watch: more than {_MAX_DIRS} directories in {root} (checkout {n} of {len(roots)} in {project.path}), "
                f"the deepest aren't watched; the limit is _MAX_DIRS in atrium/watch.py, per checkout")
         _say(f"limit {root}", cut if queue else None)
-    return _Plan(list(dict.fromkeys(out)), frozenset(seen))
+    return _Plan(list(dict.fromkeys(out)), frozenset(seen), tuple(roots))
 
 
 def _within(path: str, tops: set[str]) -> bool:
@@ -206,8 +215,13 @@ class _DirWatcher:
         self._retry_at = 0.0  # no plan, nor watch, before this: after a failure
         self._fails = 0  # in a row
         self._failure = ""  # the last one, logged with its traceback
+        self._thread: CapacityLimiter | None = None  # the watch's own thread (start)
 
     def start(self) -> None:
+        # Not one of the 40 threads anyio lends by default: they serve the server too (StaticFiles, FileResponse), and a
+        # watch holds one all the time. With 46 projects loaded, every file the page loaded waited for some watch's tick
+        # to end: its 1 MB script took 4 s, not 3 ms.
+        self._thread = CapacityLimiter(1)
         self._task = asyncio.create_task(self._run(), name=self._name)
         self.replan()
 
@@ -278,7 +292,7 @@ class _DirWatcher:
                     continue
                 try:
                     # in anyio's worker threads, as awatch did: one per watch all the time would fill asyncio's default pool
-                    raw = await to_thread.run_sync(watcher.watch, self._debounce, self._step, _TICK_MS, self._stop)
+                    raw = await to_thread.run_sync(watcher.watch, self._debounce, self._step, _TICK_MS, self._stop, limiter=self._thread)
                 except Exception as e:  # the watch broke: another, later
                     watcher.close()
                     watcher = None
@@ -329,7 +343,7 @@ class _DirWatcher:
     async def _drain(self, watcher: RustNotify) -> set[tuple[int, str]] | str:
         """What a watch caught and hasn't handed on (it waits a step for it, and out its debounce)."""
         try:
-            return await to_thread.run_sync(watcher.watch, self._debounce, self._step, 1, self._stop)
+            return await to_thread.run_sync(watcher.watch, self._debounce, self._step, 1, self._stop, limiter=self._thread)
         except Exception:  # it broke: the new one is up already
             return "error"
 
@@ -406,20 +420,23 @@ class _DirWatcher:
 
 class ProjectWatcher(_DirWatcher):
     def __init__(self, project: Project):
-        super().__init__(f"watch-{project.id}", debounce=400, step=100, watch_filter=_project_filter)
+        super().__init__(f"watch-{project.id}", debounce=400, step=100, watch_filter=self._wanted)
         self.project = project
+
+    def _wanted(self, change: Change, path: str) -> bool:
+        return _project_filter(change, _in_checkout(path, self._plan.roots if self._plan else (self.project.path,)))
 
     async def _make_plan(self) -> _Plan:
         return await asyncio.to_thread(_project_dirs, self.project)
 
     def _watchable(self, path: str) -> bool:
         if "/.git/" in path:  # only refs/ and worktrees/ (and worktrees itself) are watched there
-            return _project_filter(Change.added, path)
+            return self._wanted(Change.added, path)
         return os.path.basename(path) not in _NOT_WALKED
 
     async def _missed(self, paths: list[str]) -> None:
         topic = f"project:{self.project.id}"
-        files = [p for p in paths if "/.git/" not in p and _project_filter(Change.added, p)]
+        files = [p for p in paths if "/.git/" not in p and self._wanted(Change.added, p)]
         if files:
             fs.files_changed(files)
             hub.publish(topic, {"type": "fs", "paths": files[:200]})
@@ -472,6 +489,15 @@ class TranscriptWatcher(_DirWatcher):
             for d in h.transcript_dirs(project.path):
                 self._dirs.setdefault(str(d), set()).add(project.id)
         self.replan()
+
+    def remove_project(self, pid: str) -> None:
+        """No more changes for it (the watch on a directory it alone had goes at the next plan)."""
+        self._projects.pop(pid, None)
+        self._roots.pop(pid, None)
+        for d in [d for d, ids in self._dirs.items() if pid in ids]:
+            self._dirs[d].discard(pid)
+            if not self._dirs[d]:
+                del self._dirs[d]
 
     def _bases(self) -> list[str]:
         bases = {str(Path(d).parent) for d in self._dirs}

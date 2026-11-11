@@ -947,6 +947,16 @@ class CodexHarness(Harness):
             by_id[t["id"]] = {**t, "createdAt": min(created) if created else None}
         return [self._summary(t) for t in by_id.values()]
 
+    async def has_sessions(self, directory: str) -> bool | None:
+        # list_sessions gives [] when thread/list fails: that's "can't tell", not "none"
+        if not self.available()[0]:
+            return False  # none that Atrium would list
+        try:
+            res = await self.client.request("thread/list", {"cwd": _thread_cwds([directory]), "sourceKinds": SOURCE_KINDS, "limit": 1}, timeout=30)
+        except Exception:
+            return None
+        return bool(res.get("data"))
+
     async def list_subagents(self, sessions: list[SessionSummary], roots: list[str]) -> dict[str, list[SubagentSummary]]:
         # thread/list doesn't return sub-agent threads: follow each thread's own spawn events instead
         mine = [s for s in sessions if s.harness == self.id]

@@ -116,8 +116,11 @@ class ReviewManager:
         return self.project.session_meta(review_sid).get("reviews")
 
     def auto_enabled(self, wsid: str) -> bool:
+        """The agent's own choice (the drawer's Auto box), else review_agent.auto: in a chat, review_agent.chats too."""
         own = self._load().get(wsid, {}).get("auto")
-        return bool(config.get("review_agent.auto")) if own is None else bool(own)
+        if own is not None:
+            return bool(own)
+        return bool(config.get("review_agent.auto")) and (not self.project.chat or bool(config.get("review_agent.chats")))
 
     def _reconcile(self, data: dict[str, Any]) -> bool:
         """A running round whose reviewer is no longer working (its process died) failed."""

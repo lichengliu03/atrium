@@ -3,6 +3,7 @@
 Topics:
     ``project:<pid>``   board / tracker / session-list / fs / git-view events
     ``session:<sid>``   normalized chat items streamed from a live session
+    ``open:<pid>``      no events: a page subscribes while it has the project open (a chat isn't discarded under it)
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ class Subscriber:
         self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5000)
         self.topics: set[str] = set()
         self.active: bool = False  # the browser page is visible and focused (reported over the socket)
+        self.page: str | None = None  # which page it is (one socket per page, a new one when it reconnects)
 
 
 class Hub:
@@ -39,6 +41,10 @@ class Hub:
     def drop(self, sub: Subscriber) -> None:
         for t in list(sub.topics):
             self.unsubscribe(sub, t)
+
+    def pages(self, topic: str) -> set[str | None]:
+        """The pages subscribed to ``topic``."""
+        return {sub.page for sub in self._subs.get(topic, ())}
 
     def watching(self, topic: str) -> bool:
         """Whether someone is looking at ``topic``: an active page is subscribed to it."""

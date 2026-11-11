@@ -73,9 +73,9 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
-  "tracker": {"enabled": true, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
+  "tracker": {"enabled": true, "chats": false, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
   "git_agent": {"harness": "claude-code", "model": ""},
-  "review_agent": {"auto": true, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
+  "review_agent": {"auto": true, "chats": false, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
@@ -140,6 +140,7 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `tracker.enabled` | `true` | `false`：只在你要求时运行。 |
+| `tracker.chats` | `false` | 在 chat（主页 → New chat）里也自动运行。`false`：在 chat 里只在你要求时运行（看板上的 Track now），不会每次回答后都跑一次。 |
 | `tracker.harness` | `"claude-code"` | 用哪个 harness 调用模型；这个 harness 不可用时改用 Claude Code。 |
 | `tracker.model` | `""` | `""` = 该 harness 的默认模型。小而快的模型就够了（`haiku`）。 |
 | `tracker.effort` | `"low"` | |
@@ -159,6 +160,7 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `review_agent.auto` | `true` | agent 报告任务 `done` 或 `waiting`（等你处理）时，自动审查它的新改动。抽屉里的 *Auto* 勾选框可以对单个 agent 覆盖这项设置。 |
+| `review_agent.chats` | `false` | 在 chat（主页 → New chat）里也自动审查。`false`：chat 里的 agent 只在你要求时审查（点 *Review*），或者它自己的 *Auto* 勾选框勾上时。 |
 | `review_agent.harness` | `"claude-code"` | `""` = `defaults.harness`。 |
 | `review_agent.model`、`review_agent.effort` | `""` | `""` = `harnesses.<harness>.model` / `effort`。 |
 | `review_agent.language` | `""` | 审查者用什么语言写；`""` = 跟你用的语言一样。 |

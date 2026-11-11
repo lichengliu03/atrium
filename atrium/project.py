@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from . import gitops
-from .config import config, project_id_for
+from .config import config, is_chat, project_id_for
 
 
 class ProjectNotFound(KeyError):
@@ -48,6 +48,7 @@ class Project:
         self.id = pid
         self.path = path
         self.name = os.path.basename(path) or path
+        self.chat = is_chat(path)
         self.state_dir = Path(path) / ".atrium"
         self._lock = threading.RLock()
         self._ensure_state_dir()
@@ -204,7 +205,7 @@ class Project:
         return Path(target)
 
     def describe(self) -> dict[str, Any]:
-        return {"id": self.id, "path": self.path, "name": self.name, "is_git": gitops.is_repo(self.path)}
+        return {"id": self.id, "path": self.path, "name": self.name, "chat": self.chat, "is_git": gitops.is_repo(self.path)}
 
 
 class ProjectManager:

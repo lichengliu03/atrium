@@ -9,6 +9,8 @@ Everything global lives in ``$ATRIUM_HOME`` (default ``~/.atrium``):
     uploads/         files attached in the composer (pasted images etc.)
     runtime/         scratch cwd for background LLM calls (keeps their
                      transcripts out of the user's project session lists)
+    chats/           one folder per chat (home page → New chat), named for the
+                     time it began; each is a project of its own
 
 Per-project state lives in ``<project>/.atrium/`` (see ``project.py``).
 """
@@ -30,6 +32,7 @@ SETTINGS_PATH = ATRIUM_HOME / "settings.json"
 RUNTIME_DIR = ATRIUM_HOME / "runtime"
 UPLOADS_DIR = ATRIUM_HOME / "uploads"
 BACKUPS_DIR = ATRIUM_HOME / "backups"
+CHATS_DIR = ATRIUM_HOME / "chats"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "defaults": {
@@ -59,6 +62,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Background Tracker Agent (one per project)
     "tracker": {
         "enabled": True,
+        "chats": False,  # in chats (home page → New chat) too; False: there only when asked (the board's Track now)
         "harness": "claude-code",
         "model": "",  # a small fast model is plenty
         "effort": "low",
@@ -71,6 +75,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # one any time. Nothing reaches the agent until the human sends it.
     "review_agent": {
         "auto": True,
+        "chats": False,  # automatic reviews in chats (home page → New chat) too; an agent's own Auto box still wins
         "harness": "claude-code",
         "model": "",
         "effort": "",
@@ -132,6 +137,11 @@ _LEGACY_KEYS = {
     "extra_mcp_servers": "mcp_servers",
     "theme": "ui.theme",
 }
+
+
+def is_chat(path: str) -> bool:
+    """Made by New chat (home page): a folder of CHATS_DIR. Project paths are real ones."""
+    return os.path.dirname(path) == os.path.realpath(CHATS_DIR)
 
 
 def project_id_for(path: str | Path) -> str:
@@ -283,7 +293,7 @@ class Config:
         with self._lock:
             out = []
             for p in self._data["projects"]:
-                out.append({**p, "id": project_id_for(p["path"]), "exists": os.path.isdir(p["path"])})
+                out.append({**p, "id": project_id_for(p["path"]), "exists": os.path.isdir(p["path"]), "chat": is_chat(p["path"])})
             out.sort(key=lambda p: p.get("last_opened", 0), reverse=True)
             return out
 

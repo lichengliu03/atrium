@@ -26,7 +26,11 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
    they said they wait or are blocked), then your projects as cards — pinned ones, then the ones you
    open most, archived ones folded away (and not loaded until opened) — each with the Tracker's
    one-liner, its git branch and changed files, and what its agents are doing. Open a folder from
-   there, or make a new one (git-initialised unless you untick it).
+   there, or make a new one (git-initialised unless you untick it). Or start a **chat**, as Codex does
+   for one with no project: a new folder of its own in `~/.atrium/chats`, named for the time
+   (`2026-11-10-153012`), opened at a new agent; chats are listed apart from your projects. Leave one
+   before an agent starts there or anything is put in it, and it goes, folder and all. The Tracker and
+   the Code Review Agent run in a chat only when you ask them to (`tracker.chats`, `review_agent.chats`).
 2. **One fixed HTML board per project** — `<project>/.atrium/board.html`. It is self-contained
    (open it straight from disk), embedded live in the UI, and written by two kinds of agents:
    * **Session agents** get a fixed system-prompt section plus the `board` tools
@@ -283,6 +287,7 @@ own login, so you log in once more there.
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments, and the images in Claude conversations (their transcripts hold them as base64), written out once to be shown in the chat |
 | `~/.atrium/backups/` | the previous versions of config files saved from Settings (last 20 each) |
+| `~/.atrium/chats/` | a folder per chat started from the home page, named for when it began; each is a project (not a git repository) |
 | `~/.atrium/captures/captures.db` | the agents' model calls, requests and responses (credentials blanked; `capture.max_mb`, 1 GB by default, for all but compactions and the call before each; `chmod 600`) |
 | `~/.gemini/antigravity-cli/settings.json` | Antigravity's model, custom models (relays) and Gemini API key (`env`) — the Antigravity CLI's own file |
 | `~/.atrium/antigravity/` | Antigravity conversations: the runtime's state (`save/`), its data and JSONL transcripts (`data/brain/<id>/`), Atrium's index (`sessions/`) |

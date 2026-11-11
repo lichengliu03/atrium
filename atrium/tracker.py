@@ -132,10 +132,15 @@ class Tracker:
         h = get_harness(config.get("tracker.harness"))
         return h if h.available()[0] else get_harness("claude-code")
 
+    def _on(self) -> bool:
+        """Whether it runs on its own here, else only when asked: tracker.enabled, and in a chat tracker.chats too
+        (a question and its answer, each followed by a call of the Tracker's own, is more than a chat asks for)."""
+        return bool(config.get("tracker.enabled")) and (not self.project.chat or bool(config.get("tracker.chats")))
+
     def status(self) -> dict[str, Any]:
         st = self.project.tracker_state()
         return {
-            "enabled": bool(config.get("tracker.enabled")),
+            "enabled": self._on(),
             "interval": int(config.get("tracker.interval_seconds") or 300),
             "harness": self._harness().id,
             "running": self.running,
@@ -159,7 +164,7 @@ class Tracker:
             self._next_due = now + max(30, int(config.get("tracker.interval_seconds") or 300))
             if turn:
                 self._turn_due = None
-            if not forced and not config.get("tracker.enabled"):
+            if not forced and not self._on():
                 continue
             try:
                 await self.run_once("manual" if forced else "after-turn" if turn else "periodic", force=forced)

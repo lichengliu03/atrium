@@ -243,7 +243,8 @@ def _collect(project: Project, sid: str, cwd: str, harness_id: str) -> tuple[dic
         if a["tree"] == b["tree"]:
             continue
         for p in snapshots.changed_paths(a["root"], a["tree"], b["tree"], git=a["git"]):
-            if "/.atrium/" in p and "/.atrium/worktrees/" not in p:
+            rel = p[len(a["root"]):]  # from the checkout: a chat is a project in ~/.atrium/chats, and that .atrium isn't its own
+            if "/.atrium/" in rel and "/.atrium/worktrees/" not in rel:
                 continue
             f = files.get(p)
             if f is None:

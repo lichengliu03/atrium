@@ -1,8 +1,9 @@
 // The home page, when no project is open: what needs you across projects, then the pinned and the most opened
-// projects with what their agents are doing, and the archived ones; open a folder or make a new one.
+// projects with what their agents are doing, the chats, and the archived ones; open a folder, make a new one, or
+// start a chat (a project in a folder of its own, made in ~/.atrium/chats).
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
-import { Archive, ArchiveRestore, ChevronRight, FolderOpen, FolderPlus, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronRight, FolderOpen, FolderPlus, MessageSquarePlus, Pin, PinOff, Plus, Search, Trash2 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AgentBrief, api, HomeProject } from "../api";
 import { useAppState } from "../store";
@@ -36,9 +37,10 @@ const lastActive = (p: HomeProject) => Math.max(p.last_opened ?? 0, ...(p.agents
 const stop = (f: () => void) => (e: MouseEvent) => (e.stopPropagation(), f());
 
 export const HomePage = memo(function HomePage() {
-  const { openProject, selectSession, setChatOpen, setPickerOpen, homeFocus, toast } = useAppState("openProject", "selectSession", "setChatOpen", "setPickerOpen", "homeFocus", "toast");
+  const { openProject, selectSession, setChatOpen, setPickerOpen, newChat, homeFocus, toast } = useAppState("openProject", "selectSession", "setChatOpen", "setPickerOpen", "newChat", "homeFocus", "toast");
   const [projects, setProjects] = useState<HomeProject[] | null>(null);
   const [query, setQuery] = useState("");
+  const [starting, setStarting] = useState(false); // a chat's folder being made: one click, one chat
   const search = useRef<HTMLInputElement>(null);
 
   const live = useRef({ mounted: true, missed: false }); // missed: asked while the tab was hidden, fetched when it shows
@@ -89,13 +91,18 @@ export const HomePage = memo(function HomePage() {
   const open = (p: HomeProject) => void openProject(p.id, true).catch(fail);
   const openAgent = (p: HomeProject, a: AgentBrief) => void openProject(p.id, true).then(() => selectSession(a.id), fail);
   const newAgent = (p: HomeProject) => void openProject(p.id, true).then(() => setChatOpen(true), fail);
+  const startChat = () => {
+    setStarting(true);
+    newChat().catch(fail).finally(() => setStarting(false));
+  };
 
   const all = projects ?? [];
   const q = query.trim().toLowerCase();
   const match = (p: HomeProject) => !q || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q);
   const current = all.filter((p) => !p.archived_at);
   const pinned = current.filter((p) => p.pinned_at && match(p)).sort((a, b) => a.pinned_at! - b.pinned_at!);
-  const frequent = current.filter((p) => !p.pinned_at && match(p)).sort((a, b) => (b.open_count ?? 0) - (a.open_count ?? 0) || lastActive(b) - lastActive(a));
+  const frequent = current.filter((p) => !p.pinned_at && !p.chat && match(p)).sort((a, b) => (b.open_count ?? 0) - (a.open_count ?? 0) || lastActive(b) - lastActive(a));
+  const chats = current.filter((p) => !p.pinned_at && p.chat && match(p)).sort((a, b) => lastActive(b) - lastActive(a)); // each opened about once: the latest first
   const archived = all.filter((p) => p.archived_at && match(p)).sort((a, b) => b.archived_at! - a.archived_at!);
   const needs = current
     .flatMap((p) => (p.agents ?? []).filter(needsYou).map((a) => ({ p, a })))
@@ -134,7 +141,7 @@ export const HomePage = memo(function HomePage() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape") setQuery("");
-                const first = [...pinned, ...frequent, ...archived].find((p) => p.exists);
+                const first = [...pinned, ...frequent, ...chats, ...archived].find((p) => p.exists);
                 if (e.key === "Enter" && q && first) open(first);
               }}
               placeholder="Search projects"
@@ -145,8 +152,11 @@ export const HomePage = memo(function HomePage() {
           <button className="btn" aria-label="Open folder" data-tip="Open a folder" onClick={() => setPickerOpen("open")}>
             <FolderOpen size={16} />
           </button>
-          <button className="btn btn-primary" aria-label="New folder" data-tip="New folder" onClick={() => setPickerOpen("create")}>
+          <button className="btn" aria-label="New folder" data-tip="New folder" onClick={() => setPickerOpen("create")}>
             <FolderPlus size={16} />
+          </button>
+          <button className="btn btn-primary" aria-label="New chat" data-tip="New chat — in a folder of its own, in ~/.atrium/chats" disabled={starting} onClick={startChat}>
+            {starting ? <Spinner /> : <MessageSquarePlus size={16} />}
           </button>
           <RailToggle />
         </header>
@@ -195,14 +205,22 @@ export const HomePage = memo(function HomePage() {
                 <div className="proj-grid">{pinned.map(card)}</div>
               </section>
             )}
-            <section>
-              <div className="section-label">Frequent</div>
-              {frequent.length > 0 ? (
-                <div className="proj-grid">{frequent.map(card)}</div>
-              ) : (
-                <div className="homepage-empty muted">{q ? "No project matches." : "No projects here yet: open a folder, or make a new one."}</div>
-              )}
-            </section>
+            {(frequent.length > 0 || chats.length === 0) && (
+              <section>
+                <div className="section-label">Frequent</div>
+                {frequent.length > 0 ? (
+                  <div className="proj-grid">{frequent.map(card)}</div>
+                ) : (
+                  <div className="homepage-empty muted">{q ? "No project matches." : "No projects here yet: open a folder, or make a new one."}</div>
+                )}
+              </section>
+            )}
+            {chats.length > 0 && (
+              <section>
+                <div className="section-label">Chats</div>
+                <div className="proj-grid">{chats.map(card)}</div>
+              </section>
+            )}
             {archived.length > 0 && (
               <details className="home-archived" open={!!q}>
                 <summary className="section-label">
@@ -292,8 +310,9 @@ function ProjectCard({ p, onOpen, onAgent, onNewAgent, onPin, onArchive, onRemov
       {p.exists && (
         <div className="proj-card-foot">
           <span className="grow ellipsis">
-            {p.git ? `⎇ ${p.git.branch ?? "?"} · ${p.git.changed ? `${p.git.changed} changed` : "clean"}` : "not a git repo"}
-            {active > 0 && ` · ${timeAgo(active)}`}
+            {[p.git ? `⎇ ${p.git.branch ?? "?"} · ${p.git.changed ? `${p.git.changed} changed` : "clean"}` : !p.chat && "not a git repo", active > 0 && timeAgo(active)]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
           <button className="btn btn-sm" onClick={stop(onNewAgent)}>
             <Plus size={13} /> New agent

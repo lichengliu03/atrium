@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { api, ForkAt, Meta, onLoggedOut, Project, ProjectInfo, SessionRow } from "./api";
+import { api, ForkAt, Meta, onLoggedOut, onProjectGone, Project, ProjectInfo, SessionRow } from "./api";
 import { socket } from "./ws";
+import { EMPTY_DRAFT, hasContent, useDrafts } from "./drafts";
 import { throttle } from "./util";
 import { syncThemeColor } from "./layout";
 
@@ -73,6 +74,7 @@ interface AppState {
   loadProjects: () => Promise<void>;
   openProject: (pid: string | null, opened?: boolean) => Promise<boolean>; // false: stayed (unsaved edits kept)
   addProject: (path: string, create?: { git: boolean }) => Promise<void>;
+  newChat: () => Promise<void>; // a project in a new folder of its own, opened at a new agent
   goHome: (search?: boolean) => Promise<void>;
   refreshProject: () => Promise<void>;
   refreshSessions: () => Promise<void>;
@@ -97,6 +99,7 @@ interface AppState {
 }
 
 let unsubProject: (() => void) | null = null;
+let gone: string | null = null; // the project found gone, being left (several requests find it at once)
 let toastId = 0;
 let sessionsAsked = 0; // session-list requests sent
 let sessionsShown = 0; // the one whose answer is in the store
@@ -180,6 +183,17 @@ export const useApp = create<AppState>((set, get) => {
       const [meta] = await Promise.all([api.meta(), get().loadProjects()]);
       set({ meta });
       onLoggedOut(() => set({ loggedOut: true }));
+      onProjectGone((pid) => {
+        const p = get().project;
+        if (p?.id !== pid) return undefined;
+        const why = `${p.chat ? "This chat" : "This project"} was removed elsewhere`;
+        if (gone !== pid) {
+          gone = pid;
+          get().toast(why, "error");
+          void get().openProject(null).finally(() => (gone = null));
+        }
+        return why;
+      });
       const params = new URLSearchParams(location.search);
       const pid = params.get("project"); // none: the home page
       if (pid && get().projects.some((p) => p.id === pid)) {
@@ -212,6 +226,14 @@ export const useApp = create<AppState>((set, get) => {
       // the editor's open files live in FilesPanel, which goes with the project: same question as closing a tab
       if (pid !== (current?.id ?? null) && unsaved.length && !confirm(`Discard unsaved changes to ${unsaved.length === 1 ? unsaved[0] : `${unsaved.length} files`}?`))
         return false;
+      // a chat left as it came (no agent, nothing typed): it goes, folder and all, unless the server finds something
+      // in it. Before the home page asks for its list, which would still have it
+      if (current?.chat && pid !== current.id && !get().sessionId && !get().sessions.length && !hasContent(useDrafts.getState().byProject[current.id])) {
+        if (await api.discardChat(current.id, socket.page).then((r) => r.discarded, () => false)) {
+          useDrafts.getState().update(current.id, () => EMPTY_DRAFT); // the harness picked there, say
+          void get().loadProjects();
+        }
+      }
       unsubProject?.();
       unsubProject = null;
       set({ railOpen: false });
@@ -223,7 +245,8 @@ export const useApp = create<AppState>((set, get) => {
       const project = await api.project(pid, opened);
       set({ project, sessions: [], sessionId: null, subagentId: null, compactionId: null, changesSession: null, fileRequest: null, forkRequest: null });
       syncUrl(pid, null);
-      unsubProject = socket.subscribe(`project:${pid}`, (msg) => {
+      const open = socket.subscribe(`open:${pid}`, () => undefined); // no events: tells the server this page has it open
+      const events = socket.subscribe(`project:${pid}`, (msg) => {
         switch (msg.type) {
           case "sessions_changed":
           case "session_state":
@@ -257,6 +280,7 @@ export const useApp = create<AppState>((set, get) => {
             break;
         }
       });
+      unsubProject = () => (open(), events());
       await get().refreshSessions();
       void get().loadProjects();
       return true;
@@ -267,6 +291,12 @@ export const useApp = create<AppState>((set, get) => {
       await get().loadProjects();
       await get().openProject(p.id, true);
       set({ pickerOpen: false });
+    },
+
+    newChat: async () => {
+      const p = await api.newChat();
+      await get().loadProjects();
+      if (await get().openProject(p.id, true)) get().selectSession(null); // on one screen: the chat, not the workspace
     },
 
     goHome: async (search = false) => {
@@ -355,6 +385,7 @@ export const useApp = create<AppState>((set, get) => {
       get().setPanel("changes");
     },
     toast: (text, kind = "info") => {
+      if (get().toasts.some((t) => t.text === text)) return; // showing already
       const id = ++toastId;
       set((s) => ({ toasts: [...s.toasts, { id, text, kind }] }));
       setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), kind === "error" ? 7000 : 3500);

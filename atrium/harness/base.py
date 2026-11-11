@@ -297,6 +297,10 @@ class Harness(ABC):
     async def list_sessions(self, project_dir: str, roots: list[str]) -> list[SessionSummary]:
         """Sessions whose cwd is the project or one of its worktrees (``roots``)."""
 
+    async def has_sessions(self, directory: str) -> bool | None:
+        """Whether a session of this harness ran in ``directory``, from Atrium or not; None: it can't tell."""
+        return bool(await self.list_sessions(directory, [directory]))
+
     @abstractmethod
     def transcript_path(self, session_id: str, cwd: str) -> Path | None: ...
 

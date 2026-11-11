@@ -78,9 +78,9 @@ The defaults:
   },
   "sessions": {"idle_close_minutes": 30},
   "notifications": {"enabled": true, "permission": true, "turn_end": true, "sound": true},
-  "tracker": {"enabled": true, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
+  "tracker": {"enabled": true, "chats": false, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
   "git_agent": {"harness": "claude-code", "model": ""},
-  "review_agent": {"auto": true, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
+  "review_agent": {"auto": true, "chats": false, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
@@ -148,6 +148,7 @@ names new agents.
 | Key | Default | |
 |---|---|---|
 | `tracker.enabled` | `true` | `false`: it runs only when you ask it to. |
+| `tracker.chats` | `false` | In chats (home page → New chat) too. `false`: there it runs only when you ask it to (the board's Track now), not after every answer. |
 | `tracker.harness` | `"claude-code"` | Which harness makes its model calls; Claude Code when that one is unavailable. |
 | `tracker.model` | `""` | `""` = the harness's default model. A small, fast one is plenty (`haiku`). |
 | `tracker.effort` | `"low"` | |
@@ -168,6 +169,7 @@ and effort are read when an agent gets its reviewer, at the first review; later 
 | Key | Default | |
 |---|---|---|
 | `review_agent.auto` | `true` | Review an agent's new changes when it reports its task `done` or `waiting` for you. The drawer's *Auto* box overrides it per agent. |
+| `review_agent.chats` | `false` | In chats (home page → New chat) too. `false`: an agent there is reviewed when you ask (*Review*), or when its own *Auto* box is ticked. |
 | `review_agent.harness` | `"claude-code"` | `""` = `defaults.harness`. |
 | `review_agent.model`, `review_agent.effort` | `""` | `""` = `harnesses.<harness>.model` / `effort`. |
 | `review_agent.language` | `""` | The language the reviewer writes in; `""` = yours. |
