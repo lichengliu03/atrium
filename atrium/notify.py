@@ -57,7 +57,8 @@ class Notifier:
             self._send(h, f"{_agent(h)} needs approval", _describe(item, h.cwd))
 
     def turn_ended(self, h: Session, item: Item) -> None:
-        if item.get("terminal_reason") in INTERRUPTED or not self._due(h, "turn_end"):
+        # goal_active: Codex goes on to the goal's next turn by itself; the turn that ends the goal is the news
+        if item.get("terminal_reason") in INTERRUPTED or item.get("goal_active") or not self._due(h, "turn_end"):
             return
         if item.get("is_error"):
             self._send(h, f"{_agent(h)} stopped with an error", item.get("text") or _last_text(h) or "The turn failed")

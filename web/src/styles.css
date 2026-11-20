@@ -589,6 +589,29 @@ a { color: var(--accent-strong); }
 }
 .voice-x { flex: none; }
 
+/* the thread's goal over the composer (chat/GoalBar.tsx): its state, its time and tokens, then the objective, which
+   gives way; with a token budget, a line along the bottom fills up as it is spent */
+.goal-bar {
+  position: relative; max-width: 780px; margin: 0 auto 6px; display: flex; align-items: center; gap: 2px; min-height: 30px;
+  padding: 0 3px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); overflow: hidden;
+  font-size: 12.5px; color: var(--text-2);
+}
+.goal-main { flex: 1; min-width: 0; align-self: stretch; display: flex; align-items: center; gap: 7px; cursor: default; }
+.goal-ico { flex: none; color: var(--muted); }
+.goal-state { flex: none; font-weight: 600; white-space: nowrap; }
+.goal-usage { flex: none; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+.goal-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.goal-meter { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); }
+.goal-bar.pursuing { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 60%, var(--surface-2)); }
+.goal-bar.pursuing .goal-ico { color: var(--accent-strong); animation: pulse 1.6s ease-in-out infinite; }
+.goal-bar.complete .goal-ico { color: var(--ok); }
+.goal-bar:is(.blocked, .usage_limited, .budget_limited) :is(.goal-ico, .goal-state) { color: var(--warn); }
+.goal-tip { text-align: left; }
+.goal-tip-text { margin: 2px 0 4px; white-space: pre-wrap; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 8; }
+/* what happened to the goal, in the chat; each turn the goal started opens with its mark */
+.msg-system.goal-complete { color: var(--ok); }
+.msg-system:is(.goal-blocked, .goal-usage_limited, .goal-budget_limited) { color: var(--warn); }
+
 /* ---------------------------------------------------------------- home */
 .home { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .home-empty { flex: 1; display: grid; place-items: center; padding: 24px; }

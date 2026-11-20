@@ -92,9 +92,9 @@ class LiveHandle:
 
     def current(self) -> list[Item]:
         """What the chat is sent: the conversation since its last compaction (what the model still sees; the part before
-        opens on its own), with the context gauge and the questions the agent still waits on. A session that runs for
-        days, compacted over and over, would otherwise come whole each time its chat opens."""
-        keep = [it for it in self.items[: self.compacted] if it.get("id") == "usage" or it.get("kind") == "permission" and it.get("id") in self.pending]
+        opens on its own), with the context gauge, the thread's goal and the questions the agent still waits on. A
+        session that runs for days, compacted over and over, would otherwise come whole each time its chat opens."""
+        keep = [it for it in self.items[: self.compacted] if it.get("id") in ("usage", "goal") or it.get("kind") == "permission" and it.get("id") in self.pending]
         return keep + self.items[self.compacted :]
 
     def settings(self) -> dict[str, Any]:

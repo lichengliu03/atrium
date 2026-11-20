@@ -1,7 +1,7 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, Brain, ChevronRight, ChevronUp, FoldVertical, GitFork, Info, Pencil, Sparkle, Square } from "lucide-react";
-import { api, EditAt, ForkAt, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
+import { ArrowUp, ArrowUpRight, Brain, ChevronRight, ChevronUp, FoldVertical, GitFork, Goal as GoalIcon, Info, Pencil, Sparkle, Square } from "lucide-react";
+import { api, EditAt, ForkAt, Goal, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
@@ -19,6 +19,7 @@ import { mergeCommands, useAtriumCommands, useSlashCommands, useSlashMenu } from
 import { useVoiceInput } from "./Voice";
 import { MessageEditor } from "./MessageEditor";
 import { ScrollAids } from "./ScrollAids";
+import { GoalBar } from "./GoalBar";
 
 type UserItem = Extract<Item, { kind: "user" }>;
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -38,10 +39,12 @@ export interface ChatState {
   model: string | null;
   effort: string | null; // the thread's effort when nothing overrides it, if the harness says (Codex)
   usage: { used: number | null; max: number | null } | null;
+  goal: Goal | null; // the thread's goal (Codex)
 }
 
 export const empty = (): ChatState => ({
   items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null, effort: null, usage: null,
+  goal: null,
 });
 
 /** The chat with `its` applied, in order. What they change is copied once, not once per item: a long conversation's
@@ -62,6 +65,9 @@ export function applyAll(st: ChatState, its: Item[]): ChatState {
         break;
       case "usage":
         next.usage = { used: it.used, max: it.max };
+        break;
+      case "goal":
+        next.goal = it.goal;
         break;
       case "tool_result":
         (results ??= { ...st.results })[it.id] = it;
@@ -477,11 +483,13 @@ function CommandText({ text }: { text: string }) {
 }
 
 /** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own).
- *  A compaction is a rule across the chat that opens the conversation before it; a summary's text folds. */
+ *  A compaction is a rule across the chat that opens the conversation before it; a summary's text folds. What happens
+ *  to the thread's goal, and each turn it starts, gets the goal's mark. */
 function SystemLine({ item }: { item: SystemItem }) {
   const done = item.subtype === "task_done";
   const open = useOpenSubagent(done ? (item.tool_use_id ?? null) : null, done && item.agent_id ? [item.agent_id] : undefined);
   const earlier = useOpenCompaction(item.subtype === "compact" ? (item.compaction ?? null) : null);
+  const Icon = item.subtype === "goal" ? GoalIcon : Info;
   if (item.subtype === "compact")
     return (
       <div className="msg-compact">
@@ -500,7 +508,7 @@ function SystemLine({ item }: { item: SystemItem }) {
     return (
       <details className="msg-system-detail">
         <summary className="msg-system">
-          <Info size={12} style={{ flex: "none" }} />
+          <Icon size={12} style={{ flex: "none" }} />
           <span>{item.text}</span>
           <ChevronRight size={12} className="chev" />
         </summary>
@@ -510,8 +518,8 @@ function SystemLine({ item }: { item: SystemItem }) {
       </details>
     );
   return (
-    <div className="msg-system">
-      <Info size={12} style={{ flex: "none" }} />
+    <div className={clsx("msg-system", item.subtype === "goal" && item.goal && `goal-${item.goal}`)}>
+      <Icon size={12} style={{ flex: "none" }} />
       <span>
         {item.text}
         {open && (
@@ -728,6 +736,16 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     }
   };
 
+  // the goal bar's buttons: /goal commands, sent as such (what's typed stays)
+  const goalCommand = useCallback(
+    (cmd: string) => {
+      if (cmd === "/goal clear" && !confirm("Clear the goal? Codex stops working toward it and forgets it.")) return;
+      stick.current = true;
+      api.send(pid, sid, cmd).catch((e: any) => toast(e.message || String(e), "error"));
+    },
+    [pid, sid, toast],
+  );
+
   const setEffort = async (effort: string) => {
     try {
       await api.setEffort(pid, sid, effort);
@@ -817,6 +835,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
       </div>
 
       <div className="composer">
+        {st.goal && <GoalBar goal={st.goal} running={running} onCommand={goalCommand} />}
         <div className={clsx("composer-box", att.dragging && "dragging")} {...att.dropProps}>
           {att.picker}
           {slash.menu}

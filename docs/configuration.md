@@ -481,6 +481,11 @@ which is Atrium's: export it before you start Atrium.
 - the **provider's address**, while `capture.enabled` is on: the thread's `model_providers.<id>.base_url`
   points at Atrium's capture proxy, which sends each call on to yours ([Request capture](#request-capture)).
   The app-server runs with the loopback addresses added to `NO_PROXY`.
+- the thread's **goal** (`/goal <objective>` in the chat, or the agent's own `create_goal`): the bar over the
+  composer shows it, and Codex starts turns on its own until it is achieved. Stopping a turn, and closing the
+  agent, pause a goal it is pursuing, as Codex's TUI does when you interrupt it: otherwise it would carry on
+  by itself after your next message. `/goal resume` (or ▶ on the bar) carries on. `goals = false` under
+  `[features]` in `config.toml` switches goals off.
 
 Changes apply to agents started afterwards.
 

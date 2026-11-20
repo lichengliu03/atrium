@@ -329,6 +329,7 @@ export type Item = (
       turns: number;
       text?: string | null;
       terminal_reason?: string | null;
+      goal_active?: boolean; // the thread's goal is still pursued: Codex starts its next turn itself
     }
   | {
       kind: "system";
@@ -337,6 +338,7 @@ export type Item = (
       text: string;
       detail?: string; // more text, shown folded (a compaction's summary)
       compaction?: string; // a compaction (subtype compact): the part before opens read-only
+      goal?: string; // subtype goal: what happened to the thread's goal (set, paused, complete…, "turn": a turn it started)
       model?: string;
       effort?: string | null;
       permission_mode?: string;
@@ -347,7 +349,18 @@ export type Item = (
   | { kind: "delta"; text: string }
   | { kind: "state"; state: LiveState }
   | { kind: "usage"; id: string; used: number | null; max: number | null } // context window gauge, latest wins
+  | { kind: "goal"; id: string; goal: Goal | null } // the thread's goal (Codex's /goal), latest wins
 ) & { ts?: number };
+
+/** What a Codex thread is told to keep working toward, turn after turn, and how far it got. */
+export interface Goal {
+  objective: string;
+  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+  tokens_used: number;
+  token_budget: number | null;
+  time_used: number; // seconds spent on it, in its turns
+  created_at?: number | null;
+}
 
 export interface BoardAgent {
   session_id: string;

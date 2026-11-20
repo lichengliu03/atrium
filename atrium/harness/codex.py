@@ -73,11 +73,12 @@ COMMANDS = [
     SlashCommand("init", "create an AGENTS.md file with instructions for Codex"),
     SlashCommand("compact", "summarize conversation to prevent hitting the context limit"),
     SlashCommand("review", "review my current changes and find issues", argument_hint="[instructions]"),
+    SlashCommand("goal", "set or view the goal for a long-running task", argument_hint="[<objective>|pause|resume|clear]"),
     SlashCommand("status", "show current session configuration and token usage"),
     SlashCommand("mcp", "list configured MCP tools"),
     SlashCommand("skills", "list skills; mention one with $name to use it"),
 ]
-LOCAL_COMMANDS = {"status", "mcp", "skills"}  # answered by Atrium, no turn
+LOCAL_COMMANDS = {"status", "mcp", "skills", "goal"}  # answered by Atrium, no turn (a goal's turns are Codex's own)
 TURN_COMMANDS = {"compact", "review"}  # turns of their own, started by their own app-server methods
 SLASH_RE = re.compile(r"/([^\s/]+)(?:\s+(.*))?", re.S)
 SKILL_RE = re.compile(r"(?<![\w$])\$([A-Za-z0-9][\w.:-]*)")  # "$name" mentions a skill
@@ -313,15 +314,48 @@ def review_prompts(turns: list[dict[str, Any]]) -> set[int]:
     return {i for i, t in enumerate(turns) if [it.get("type") for it in t.get("items") or []] == ["userMessage"] and (reviewing(i - 1) or reviewing(i + 1))}
 
 
-def turn_items(turn: dict[str, Any], review: bool = False) -> list[Item]:
-    """``review``: the turn holds a review's prompt only (``review_prompts``), shown as the /review command.
+def _prompted(turn: dict[str, Any]) -> bool:
+    """A message opens the turn (a user's, a review's prompt), as opposed to a compaction or the thread's goal."""
+    return any(it.get("type") == "userMessage" for it in turn.get("items") or [])
+
+
+def _turns_items(turns: list[dict[str, Any]], goal_turns: set[str] | frozenset[str] = frozenset(),
+                 goal_said: list[tuple[str | None, dict[str, Any]]] | None = None) -> list[Item]:
+    """The chat items of ``turns``. ``goal_turns``: those the thread's goal started; ``goal_said``: what the rollout says
+    the goal became (set, paused, achieved…), each with the turn it came in or after (None: before them all), where a
+    line says so."""
+    reviews = review_prompts(turns)
+    said: dict[str | None, list[tuple[int, dict[str, Any]]]] = {}
+    for n, (turn, g) in enumerate(goal_said or []):
+        said.setdefault(turn, []).append((n, g))
+    prev: list[dict[str, Any] | None] = [None]
+
+    def lines(turn: str | None) -> list[Item]:
+        out = []
+        for n, g in said.get(turn, []):
+            line = goal_line(prev[0], g, f"goal-{turn or 'start'}-{n}")
+            prev[0] = g
+            if line:
+                out.append(line)
+        return out
+
+    out = lines(None)
+    for i, t in enumerate(turns):
+        out += turn_items(t, i in reviews, t.get("id") in goal_turns and not _prompted(t))
+        out += lines(t.get("id"))
+    return out
+
+
+def turn_items(turn: dict[str, Any], review: bool = False, goal: bool = False) -> list[Item]:
+    """``review``: the turn holds a review's prompt only (``review_prompts``), shown as the /review command. ``goal``:
+    the thread's goal started it (its input is hidden), shown by a line.
     Thread items have no time of their own: the prompt gets when the turn started, its last item when it ended."""
     started, ended = _epoch(turn.get("startedAt")), _epoch(turn.get("completedAt"))
     if review:
         it = user_item(turn["items"][0])
         text = it["text"].strip()
         return [{**it, "text": "/review" if text == REVIEW_UNCOMMITTED else f"/review {text}", "command": True, "ts": started}]
-    out: list[Item] = []
+    out: list[Item] = [goal_turn_line(turn["id"], started)] if goal and turn.get("id") else []
     for it in turn.get("items") or []:
         if it.get("type") == "userMessage":
             out.append(user_item(it))
@@ -342,7 +376,7 @@ def turn_items(turn: dict[str, Any], review: bool = False) -> list[Item]:
     first = next((it for it in out if it["kind"] == "user"), None)
     if first and started and first is out[0]:  # (a steer, later in the turn, has no time)
         first["ts"] = started
-    last = next((it for it in reversed(out) if it["kind"] in ("text", "system", "error")), None)
+    last = next((it for it in reversed(out) if it["kind"] in ("text", "system", "error") and it.get("goal") != "turn"), None)
     if last and ended and last is not first:
         last["ts"] = ended
     return out
@@ -380,6 +414,101 @@ def subagent_task(item: dict[str, Any]) -> Item | None:
 
 
 # --------------------------------------------------------------------------
+# Thread goals (/goal)
+# --------------------------------------------------------------------------
+# A thread can have a goal. While it is active, Codex starts a turn of its own each time the thread goes idle (its input
+# is hidden: no user message opens it), until the model reports the goal achieved, or it is paused, blocked, or out of
+# budget. The chat gets a ``goal`` item (latest wins: what it is, how far it got) and a line where the goal changes.
+
+GOAL_TOOLS = ("create_goal", "update_goal")  # the model's own goal tools: Codex lists no thread item for their calls
+GOAL_INPUT = b'"goal.internal_context"'  # in a rollout: the hidden input of a turn the goal started
+GOAL_STATUS = {"usageLimited": "usage_limited", "budgetLimited": "budget_limited"}  # app-server status -> Atrium's
+GOAL_WORD = {"active": "being pursued", "paused": "paused", "blocked": "blocked", "usage_limited": "stopped at the usage limit",
+             "budget_limited": "stopped: its token budget is used up", "complete": "achieved"}
+GOAL_LINE = {  # status -> the chat's line when a goal gets there
+    "active": "Goal resumed",
+    "paused": "Goal paused",
+    "blocked": "Goal blocked: the agent can't get further without you",
+    "usage_limited": "Goal stopped: usage limit reached",
+    "budget_limited": "Goal stopped: its token budget is used up",
+    "complete": "Goal achieved",
+}
+GOAL_TURN = "Working toward the goal"  # the line opening a turn the goal started
+GOAL_HELP = ("`/goal <objective>` sets one: Codex then keeps working on it, turn after turn, until it's achieved. "
+             "`/goal pause`, `/goal resume` and `/goal clear` stop it, carry on and drop it.")
+
+
+def goal_state(g: Any) -> dict[str, Any] | None:
+    """An app-server ThreadGoal (a notification's, thread/goal/get's, a goal tool's answer) as the chat has it."""
+    if not isinstance(g, dict) or not g.get("objective"):
+        return None
+    status = g.get("status") or "active"
+    return {"objective": g["objective"], "status": GOAL_STATUS.get(status, status), "tokens_used": int(g.get("tokensUsed") or 0),
+            "token_budget": g.get("tokenBudget"), "time_used": int(g.get("timeUsedSeconds") or 0), "created_at": g.get("createdAt")}
+
+
+async def read_goal(client: AppServerClient, thread_id: str) -> dict[str, Any] | None:
+    """The thread's goal as Codex has it now (``goal_state``), loaded or not; raises if Codex can't say (goals switched
+    off in config.toml)."""
+    return goal_state((await client.request("thread/goal/get", {"threadId": thread_id}, timeout=30)).get("goal"))
+
+
+def _elapsed(s: int) -> str:
+    """12s, 5m, 1h 30m, 2d 3h 0m: a goal's time, counted as Codex's TUI does."""
+    if s < 60:
+        return f"{s}s"
+    h, m = divmod(s // 60, 60)
+    if not h:
+        return f"{m}m"
+    return f"{h // 24}d {h % 24}h {m}m" if h >= 24 else f"{h}h {m}m" if m else f"{h}h"
+
+
+def goal_usage(g: dict[str, Any]) -> str:
+    budget = f" of {_tokens(g['token_budget'])}" if g.get("token_budget") else ""
+    return f"{_elapsed(g['time_used'])} · {_tokens(g['tokens_used'])}{budget} tokens"
+
+
+def goal_line(prev: dict[str, Any] | None, cur: dict[str, Any] | None, iid: str) -> Item | None:
+    """The chat's line for a thread's goal going from ``prev`` to ``cur`` (``goal_state``s), if that is news: set (or
+    another in its place), its objective changed, its status; cleared."""
+    line: Item = {"kind": "system", "id": iid, "subtype": "goal"}
+    if cur is None:
+        return {**line, "goal": "cleared", "text": "Goal cleared"} if prev else None
+    # the same goal (its objective edited, as the TUI's /goal edit does), or another in its place: times are whole
+    # seconds, but another one starts its count over, and an achieved one is only ever replaced
+    same = (prev is not None and prev.get("created_at") == cur.get("created_at") and cur["tokens_used"] >= prev["tokens_used"]
+            and prev["status"] != "complete")
+    if not same or prev["objective"] != cur["objective"]:
+        verb = "Goal changed" if same else "Goal set"
+        text = f"{verb}: {short(cur['objective'], 120)}"
+        return {**line, "goal": "set", "text": text, **({"detail": cur["objective"]} if text != f"{verb}: {cur['objective']}" else {})}
+    if prev["status"] == cur["status"]:
+        return None
+    text = GOAL_LINE.get(cur["status"], f"Goal {cur['status']}")
+    if cur["status"] in ("complete", "budget_limited"):
+        text += f" · {goal_usage(cur)}"
+    return {**line, "goal": cur["status"], "text": text}
+
+
+def goal_summary(g: dict[str, Any] | None) -> str:
+    """What /goal answers on its own (markdown): the goal, how far it got, and what can be done with it."""
+    if not g:
+        return f"No goal is set. {GOAL_HELP}"
+    st = g["status"]
+    then = ("`/goal pause` stops it after this turn" if st == "active" else "`/goal resume` carries on" if st in ("paused", "blocked", "usage_limited")
+            else "`/goal <objective>` sets a new one")
+    quote = "\n".join(f"> {x}" for x in g["objective"].splitlines())
+    return f"**Goal**, {GOAL_WORD.get(st, st)}: {goal_usage(g)}\n\n{quote}\n\n{then} · `/goal clear` drops it"
+
+
+def goal_turn_line(turn_id: str, ts: float | None = None) -> Item:
+    it: Item = {"kind": "system", "id": f"goal-turn-{turn_id}", "subtype": "goal", "goal": "turn", "text": GOAL_TURN}
+    if ts:
+        it["ts"] = ts
+    return it
+
+
+# --------------------------------------------------------------------------
 # Live session
 # --------------------------------------------------------------------------
 
@@ -401,6 +530,9 @@ class CodexLiveSession(LiveSession):
         self._mode_dirty = False
         self.turn_id: str | None = None
         self._turn_started = 0.0
+        self._own_turns = 0  # turns Atrium asked for that haven't started yet: any other is one the goal started
+        self._goal: dict[str, Any] | None = None  # the thread's goal as last heard (goal_state)
+        self._goal_known = False  # heard at all: the first word on it is how things stand, not news
         self._pending: dict[str, asyncio.Future] = {}
         self._file_changes: dict[str, Any] = {}
         self._tools: dict[tuple[str, str], ToolSpec] = {(ns, t.name): t for ns, specs in spec.toolsets.items() for t in specs}
@@ -438,6 +570,10 @@ class CodexLiveSession(LiveSession):
             "text": f"Connected · Codex · model {model}" + (f" · effort {effort}" if effort else "") + f" · {mode}",
             "model": self.model or (model if model != "?" else ""), "effort": effort, "permission_mode": self.mode,
         })
+        if spec.resume:
+            await self._read_goal()
+        else:
+            self._goal_known = True  # a new thread has none
         self._set_state("idle")
 
     async def send(self, text: str, attachments: list[Attachment] | None = None) -> None:
@@ -445,7 +581,9 @@ class CodexLiveSession(LiveSession):
         cmd = SLASH_RE.fullmatch(text.strip())
         name, args = (cmd.group(1), (cmd.group(2) or "").strip()) if cmd else ("", "")
         if name in LOCAL_COMMANDS:
-            self.emit({"kind": "command_output", "id": f"cmd-{uuid.uuid4().hex[:12]}", "text": await self._local_command(name)})
+            out = await self._local_command(name, args)
+            if out:  # (what /goal changes, the chat says as Codex reports it)
+                self.emit({"kind": "command_output", "id": f"cmd-{uuid.uuid4().hex[:12]}", "text": out})
             return
         if name in TURN_COMMANDS:
             await self._turn_command(name, args)
@@ -473,9 +611,11 @@ class CodexLiveSession(LiveSession):
             params["approvalPolicy"], params["sandboxPolicy"], params["approvalsReviewer"] = approval, SANDBOX_POLICY[sandbox], reviewer
             self._mode_dirty = False
         self._set_state("running")
+        self._own_turns += 1
         try:
             res = await self.client.request("turn/start", params)
         except Exception:
+            self._own_turns = max(0, self._own_turns - 1)
             self._set_state("idle")
             raise
         self.turn_id = (res.get("turn") or {}).get("id") or self.turn_id
@@ -484,6 +624,7 @@ class CodexLiveSession(LiveSession):
     async def interrupt(self) -> None:
         if self.turn_id:
             await self.client.request("turn/interrupt", {"threadId": self.session_id, "turnId": self.turn_id})
+        await self._pause_goal()  # as Codex's TUI does: stopping the turn stops the goal from starting the next one
 
     async def set_permission_mode(self, mode: str) -> None:
         if mode != self.mode:
@@ -520,6 +661,7 @@ class CodexLiveSession(LiveSession):
             try:
                 if self.turn_id:
                     await self.client.request("turn/interrupt", {"threadId": self.session_id, "turnId": self.turn_id}, timeout=5)
+                await self._pause_goal(timeout=5)  # (else it carries on by itself after the next message, unasked)
                 await self.client.request("thread/unsubscribe", {"threadId": self.session_id}, timeout=5)
             except Exception:
                 pass
@@ -556,6 +698,7 @@ class CodexLiveSession(LiveSession):
         if self.turn_id and self.state in ("running", "waiting"):
             raise RuntimeError(f"/{name} has to wait until the current turn ends (or stop it)")
         self._set_state("running")
+        self._own_turns += 1
         try:
             if name == "compact":
                 await self.client.request("thread/compact/start", {"threadId": self.session_id})
@@ -564,12 +707,15 @@ class CodexLiveSession(LiveSession):
                 res = await self.client.request("review/start", {"threadId": self.session_id, "target": target, "delivery": "inline"})
                 self.turn_id = (res.get("turn") or {}).get("id") or self.turn_id
         except Exception:
+            self._own_turns = max(0, self._own_turns - 1)
             self._set_state("idle")
             raise
         self._turn_started = time.time()
 
-    async def _local_command(self, name: str) -> str:
-        """/status, /mcp and /skills, answered from what Atrium and the app-server know (markdown)."""
+    async def _local_command(self, name: str, args: str = "") -> str | None:
+        """/status, /mcp, /skills and /goal, answered from what Atrium and the app-server know (markdown)."""
+        if name == "goal":
+            return await self._goal_command(args)
         if name == "status":
             mode = next((m["label"] for m in PERMISSION_MODES if m["id"] == self.mode), self.mode)
             effort = self.effort or self._config_effort
@@ -582,6 +728,8 @@ class CodexLiveSession(LiveSession):
             used, mx = self._usage.get("used"), self._usage.get("max")
             if used and mx:
                 lines.append(f"Context window: {round(100 * used / mx)}% used ({_tokens(used)} / {_tokens(mx)} tokens)")
+            if self._goal:
+                lines.append(f"Goal: {GOAL_WORD.get(self._goal['status'], self._goal['status'])} · {goal_usage(self._goal)}")
             return "\n".join(f"- {x}" for x in lines)
         if name == "mcp":
             servers: list[dict[str, Any]] = []
@@ -608,6 +756,65 @@ class CodexLiveSession(LiveSession):
             return "No skills found. Codex looks for `SKILL.md` files in `~/.codex/skills`, `~/.agents/skills` and the repository's `.agents/skills`."
         rows = [f"- **${sk['name']}** — {_skill_summary(sk)}" + (f" ({sk['scope']})" if sk.get("scope") else "") for sk in skills]
         return "Mention a skill with `$name` in a message to use it.\n\n" + "\n".join(rows)
+
+    # ---- the thread's goal ---------------------------------------------------
+    async def _goal_command(self, args: str) -> str | None:
+        """/goal: what it is; /goal <objective> sets one (in place of any other, as the TUI's "replace" does); pause,
+        resume, clear. What changes shows as Codex reports it (``_on_goal``): only a refusal is answered here."""
+        word = args.lower()
+        try:
+            if not args:
+                await self._read_goal()
+                return goal_summary(self._goal)
+            if word == "clear":
+                res = await self.client.request("thread/goal/clear", {"threadId": self.session_id}, timeout=30)
+                return None if res.get("cleared") else f"There was no goal to clear. {GOAL_HELP}"
+            if word in ("pause", "resume"):
+                await self._read_goal()
+                if not self._goal:
+                    return f"No goal is set. {GOAL_HELP}"
+                if word == "resume" and self._goal["status"] in ("complete", "budget_limited"):
+                    return "That goal is over: " + ("achieved." if self._goal["status"] == "complete" else "its token budget is used up.") + " `/goal <objective>` sets a new one."
+                await self._set_goal(status="paused" if word == "pause" else "active")
+                return None
+            await self._read_goal()
+            if self._goal:  # replaced: the earlier goal's own line says what it was
+                await self.client.request("thread/goal/clear", {"threadId": self.session_id}, timeout=30)
+            await self._set_goal(objective=args, status="active")
+        except RpcError as e:
+            return f"Codex refused: {e}"
+        return None
+
+    async def _set_goal(self, timeout: float = 30, **changes: Any) -> None:
+        await self.client.request("thread/goal/set", {"threadId": self.session_id, **changes}, timeout=timeout)
+
+    async def _read_goal(self) -> None:
+        """Catch up with the thread's goal (on resume, Codex also announces it, possibly before this session listens)."""
+        try:
+            goal = await read_goal(self.client, self.session_id)
+        except Exception as e:  # goals switched off, or an app-server that doesn't know them
+            log.debug("thread/goal/get %s failed: %s", self.session_id, e)
+            return
+        self._on_goal(goal)
+
+    async def _pause_goal(self, timeout: float = 30) -> None:
+        """Pause the goal if it is being pursued (no turn of its own after this)."""
+        if (self._goal or {}).get("status") == "active":
+            try:
+                await self._set_goal(timeout, status="paused")
+            except Exception as e:
+                log.warning("couldn't pause the goal of %s: %s", self.session_id, e)
+
+    def _on_goal(self, goal: dict[str, Any] | None) -> None:
+        """The thread's goal as Codex reports it now: the chat's ``goal`` item, and a line if this is news."""
+        prev, known = self._goal, self._goal_known
+        self._goal, self._goal_known = goal, True
+        if known and prev != goal:
+            line = goal_line(prev, goal, f"goal-{uuid.uuid4().hex[:10]}")
+            if line:
+                self.emit(line)
+        if not known or prev != goal:
+            self.emit({"kind": "goal", "id": "goal", "goal": goal})
 
     async def _skill_inputs(self, text: str) -> list[dict[str, Any]]:
         """The skills a message mentions ("$name"), as the input items Codex loads them from."""
@@ -637,9 +844,18 @@ class CodexLiveSession(LiveSession):
         if self._closed:
             return
         if method == "turn/started":
-            self.turn_id = (params.get("turn") or {}).get("id") or self.turn_id
+            turn = params.get("turn") or {}
+            if self._own_turns:
+                self._own_turns -= 1
+            elif (self._goal or {}).get("status") == "active" and turn.get("id"):  # Codex carries on toward the goal
+                self.emit(goal_turn_line(turn["id"]))
+            self.turn_id = turn.get("id") or self.turn_id
             self._turn_started = self._turn_started or time.time()
             self._set_state("waiting" if self._pending else "running")
+        elif method == "thread/goal/updated":
+            self._on_goal(goal_state(params.get("goal")))
+        elif method == "thread/goal/cleared":
+            self._on_goal(None)
         elif method == "item/agentMessage/delta":
             self.emit({"kind": "delta", "text": params.get("delta") or ""})
         elif method == "item/started":
@@ -680,6 +896,8 @@ class CodexLiveSession(LiveSession):
                 "kind": "result", "id": f"result-{turn.get('id') or uuid.uuid4().hex[:8]}", "subtype": st or "completed",
                 "is_error": st == "failed", "duration_ms": dur, "cost_usd": None, "turns": None,
                 "text": err.get("message") if st == "failed" else None, "terminal_reason": st,
+                # Codex starts the next turn itself (said before the turn ends, so this is up to date)
+                "goal_active": st == "completed" and (self._goal or {}).get("status") == "active",
             })
             self.turn_id = None
             self._turn_started = 0.0
@@ -1034,20 +1252,28 @@ class CodexHarness(Harness):
         return await asyncio.to_thread(scan)
 
     def _compactions(self, path: Path) -> list[Compaction]:
+        return self._scan(path)[0]
+
+    def _scan(self, path: Path) -> tuple[list[Compaction], set[str], list[tuple[str | None, dict[str, Any]]]]:
+        """What the rollout says the thread/turns API doesn't: its compactions, the turns its goal started, and what
+        became of the goal."""
         with self._compaction_lock:
             scan = tail_scan(self._compaction_cache, path, _CompactionScan)
-            return scan.compactions() if scan else []
+            return (scan.compactions(), set(scan.goal_turns), list(scan.goal_said)) if scan else ([], set(), [])
 
-    def _rollout_compactions(self, path: Path) -> tuple[list[Compaction], list[str]]:
-        return self._compactions(path), _compaction_summaries(path)
+    def _rollout_facts(self, path: Path) -> tuple[list[Compaction], list[str], set[str], list[tuple[str | None, dict[str, Any]]]]:
+        listed, goal_turns, goal_said = self._scan(path)
+        return listed, _compaction_summaries(path) if listed else [], goal_turns, goal_said
 
     async def _parts(self, session_id: str, cwd: str) -> tuple[list[Item], list[int]]:
         """A thread's whole conversation and where its compactions are in it: each with its id as listed
-        (``compaction``), and followed by its summary when the rollout has it."""
-        items = await self._thread_items(session_id)
+        (``compaction``), and followed by its summary when the rollout has it. What became of the thread's goal,
+        and the turns it started, get a line each."""
+        turns = await self._turns(session_id)
+        path = self.transcript_path(session_id, cwd)
+        listed, summaries, goal_turns, goal_said = await asyncio.to_thread(self._rollout_facts, path) if path else ([], [], set(), [])
+        items = _turns_items(turns, goal_turns, goal_said)
         count = sum(1 for it in items if _is_compact(it))
-        path = self.transcript_path(session_id, cwd) if count else None
-        listed, summaries = await asyncio.to_thread(self._rollout_compactions, path) if path else ([], [])
         out: list[Item] = []
         marks: list[int] = []
         for it in items:
@@ -1340,13 +1566,17 @@ class CodexHarness(Harness):
         return turns
 
     async def _thread_items(self, session_id: str) -> list[Item]:
-        turns = await self._turns(session_id)
-        reviews = review_prompts(turns)
-        return [it for i, turn in enumerate(turns) for it in turn_items(turn, i in reviews)]
+        return _turns_items(await self._turns(session_id))
 
     async def load_history(self, session_id: str, cwd: str) -> list[Item]:
         items, marks = await self._parts(session_id, cwd)
-        return items[marks[-1] :] if marks else items
+        items = items[marks[-1] :] if marks else items
+        try:  # the goal as it stands (Codex keeps it outside the rollout)
+            goal = await read_goal(self.client, session_id)
+        except Exception as e:
+            log.debug("thread/goal/get %s failed: %s", session_id, e)
+            goal = None
+        return [*items, {"kind": "goal", "id": "goal", "goal": goal}] if goal else items
 
     def digest_lines(self, lines: list[str]) -> list[str]:
         out: list[str] = []
@@ -1642,7 +1872,8 @@ def _is_compact(it: Item) -> bool:
 
 class _CompactionScan(TailScan):
     """A rollout's compactions ("compacted" entries, named by the contextCompaction item that follows
-    each), with when each part began, its first prompt and the context's size before."""
+    each), with when each part began, its first prompt and the context's size before; and the turns the
+    thread's goal started (the hidden input that opens them is Codex's goal continuation)."""
 
     def __init__(self, ino: int):
         super().__init__(ino)
@@ -1652,9 +1883,15 @@ class _CompactionScan(TailScan):
         self.tokens: int | None = None  # the context sent with the last model call
         self.found: list[Compaction] = []
         self.named = 0  # how many of them have their item id
+        self.turn: str | None = None  # the turn being read
+        self.goal_turns: set[str] = set()
+        self.goal_said: list[tuple[str | None, dict[str, Any]]] = []  # what was said of the goal, with the turn it came after
+        self.goal_calls: set[str] = set()  # the model's goal tool calls, until their answers
 
     def line(self, raw: bytes) -> None:
-        wanted = (b'"compacted"', b'"ContextCompaction"', b'"token_count"') + ((b'"UserMessage"', b'"user_message"') if self.prompt is None else ())
+        wanted = (b'"compacted"', b'"ContextCompaction"', b'"token_count"', b'"task_started"', GOAL_INPUT, b'"thread_goal_updated"', b'_goal"')
+        wanted += (b'"UserMessage"', b'"user_message"') if self.prompt is None else ()
+        wanted += (b'"function_call_output"',) if self.goal_calls else ()
         if self.started is not None and not any(w in raw for w in wanted):
             return
         try:
@@ -1672,6 +1909,21 @@ class _CompactionScan(TailScan):
         own = not self.thread or p.get("thread_id") in (None, self.thread)
         if d.get("type") == "session_meta":
             self.thread = p.get("id")
+        elif p.get("type") == "task_started":
+            self.turn = p.get("turn_id")
+        elif d.get("type") == "response_item" and GOAL_INPUT in raw:
+            if self.turn and "Continue working toward the active thread goal" in _text_of(p.get("content"))[:200]:
+                self.goal_turns.add(self.turn)  # (other goal inputs come mid-turn: its objective changed, its budget ran out)
+        elif p.get("type") == "thread_goal_updated" and p.get("threadId") in (None, self.thread):  # set from outside: Atrium's /goal, the TUI's
+            self._goal(p.get("goal"))
+        elif d.get("type") == "response_item" and p.get("type") == "function_call" and p.get("name") in GOAL_TOOLS:
+            self.goal_calls.add(p.get("call_id") or "")
+        elif d.get("type") == "response_item" and p.get("type") == "function_call_output" and p.get("call_id") in self.goal_calls:
+            self.goal_calls.discard(p["call_id"])  # the model's own: what the goal is after its call
+            out = p.get("output")
+            with contextlib.suppress(ValueError, TypeError):
+                out = json.loads(out) if isinstance(out, str) else out
+            self._goal(out.get("goal") if isinstance(out, dict) else None)
         elif d.get("type") == "compacted":
             self.found.append(Compaction(id="", at=ts, started_at=self.started, tokens=self.tokens, first_prompt=self.prompt or ""))
             self.started, self.prompt = ts, None
@@ -1689,6 +1941,11 @@ class _CompactionScan(TailScan):
                 text = p.get("message")
             if isinstance(text, str) and text.strip():
                 self.prompt = short(split_attachment_note(text)[0], 300)
+
+    def _goal(self, g: Any) -> None:
+        state = goal_state(g)
+        if state:
+            self.goal_said.append((self.turn, state))
 
     def compactions(self) -> list[Compaction]:
         """As listed: an older rollout's compactions (no item ids) are numbered."""

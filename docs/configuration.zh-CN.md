@@ -446,6 +446,10 @@ wire_api = "responses"
 - Atrium 的 `mcp_servers` **不会**传给 Codex：Codex 的 MCP 服务器来自 `config.toml` 里的 `[mcp_servers]`。
 - **provider 的地址**，在 `capture.enabled` 开启时：thread 的 `model_providers.<id>.base_url` 指向 Atrium 的
   抓包代理，再由代理转发到你的地址（见[请求抓取](#请求抓取)）。app-server 运行时，`NO_PROXY` 里会加上回环地址。
+- thread 的**目标**（goal：在聊天里输入 `/goal <目标>`，或由 agent 自己调用 `create_goal` 设定）：输入框上方的条会显示它；
+  目标达成之前，Codex 会自己一轮接一轮地继续。停止当前这一轮、关闭 agent 时，正在推进的目标会被暂停，和 Codex 的
+  TUI 在你中断时的做法一样：否则你下次发消息后它会自己接着做。`/goal resume`（或条上的 ▶）继续。在 `config.toml`
+  的 `[features]` 里写 `goals = false` 可以关掉目标功能。
 
 修改对之后启动的 agent 生效。
 
