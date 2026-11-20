@@ -202,7 +202,7 @@ function EffortBars({ level, levels }: { level: number; levels: number }) {
 }
 
 /** Reasoning effort as a slider (after Codex's). `value` "" = no pick: `base` (from the config files) applies. */
-export function EffortPicker({ efforts, value, base, onChange }: { efforts: string[]; value: string; base?: string | null; onChange: (v: string) => void }) {
+export function EffortPicker({ efforts, value, base, onChange, within = ".composer-box" }: { efforts: string[]; value: string; base?: string | null; onChange: (v: string) => void; within?: string }) {
   const [drag, setDrag] = useState<number | null>(null); // stop under the pointer while dragging
   const track = useRef<HTMLDivElement>(null);
   const shown = value || base || "";
@@ -229,7 +229,7 @@ export function EffortPicker({ efforts, value, base, onChange }: { efforts: stri
     <Popover
       up
       align="right"
-      within=".composer-box"
+      within={within}
       width={264}
       trigger={(open, toggle) => (
         <button className={clsx("chip effort-chip", open && "open")} onClick={toggle} aria-label={`Reasoning effort: ${title}`} {...tipProps}>
@@ -513,7 +513,7 @@ export function ContextRing({ used, max }: { used?: number | null; max?: number 
 }
 
 /** Harness picker: only the harness's mark in the composer; the menu names each one. */
-export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harness[]; value: string; onChange: (id: string) => void }) {
+export function HarnessPicker({ harnesses, value, onChange, disabled = false, hint }: { harnesses: Harness[]; value: string; onChange: (id: string) => void; disabled?: boolean; hint?: string }) {
   const cur = harnesses.find((h) => h.id === value) ?? harnesses[0];
   const [tipProps, tip] = useTip(
     cur && (
@@ -522,6 +522,7 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
           <span className="k">Harness:</span> {cur.label}
         </div>
         {!cur.available && <div className="k">{cur.unavailable_reason || "unavailable"}</div>}
+        {hint && <div className="k">{hint}</div>}
       </>
     ),
   );
@@ -529,18 +530,20 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
   return (
     <Popover
       up
+      fitHeight
       within=".composer-box"
       width={220}
       trigger={(open, toggle) => (
-        <button className={clsx("chip icon-chip", open && "open")} onClick={toggle} aria-label={`Harness: ${cur.label}`} {...tipProps}>
+        <button className={clsx("chip icon-chip", open && "open")} onClick={toggle} aria-label={`Harness: ${cur.label}`} aria-disabled={disabled} {...tipProps}>
           <HarnessIcon id={cur.id} />
           {tip}
         </button>
       )}
     >
-      {(close) =>
-        harnesses.map((h) => (
-          <button key={h.id} className="menu-item pick-item" disabled={!h.available} onClick={() => (onChange(h.id), close())}>
+      {(close) => <>
+        {hint && <div className="model-hint">{hint}</div>}
+        {harnesses.map((h) => (
+          <button key={h.id} className="menu-item pick-item" disabled={disabled || !h.available} onClick={() => (onChange(h.id), close())}>
             <HarnessIcon id={h.id} />
             <div className="grow">
               <div>{h.label}</div>
@@ -548,8 +551,8 @@ export function HarnessPicker({ harnesses, value, onChange }: { harnesses: Harne
             </div>
             {h.id === cur.id && <Check size={15} />}
           </button>
-        ))
-      }
+        ))}
+      </>}
     </Popover>
   );
 }
@@ -795,7 +798,7 @@ const MODE_DOCS: Record<string, string> = {
 };
 
 /** Permission mode: only the mode's icon in the composer; the menu (after Codex's) explains each mode. */
-export function PermissionPicker({ harness, value, onChange, detached }: { harness: Harness; value: string; onChange: (mode: string) => void; detached?: boolean }) {
+export function PermissionPicker({ harness, value, onChange, detached, within = ".composer-box" }: { harness: Harness; value: string; onChange: (mode: string) => void; detached?: boolean; within?: string }) {
   const info = MODE_INFO[harness.id] ?? {};
   const label = harness.permission_modes.find((m) => m.id === value)?.label ?? value;
   const Icon = info[value]?.icon ?? Shield;
@@ -811,7 +814,7 @@ export function PermissionPicker({ harness, value, onChange, detached }: { harne
   return (
     <Popover
       up
-      within=".composer-box"
+      within={within}
       width="max-content"
       trigger={(open, toggle) => (
         <button
