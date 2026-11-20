@@ -1013,7 +1013,7 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .pick-head a:hover { color: var(--text); }
 .pick-item { gap: 10px; }
 .pick-item > svg { flex: none; }
-.pick-item .d { line-height: 1.35; margin-top: 1px; }
+.pick-item .d { line-height: 1.35; margin-top: 1px; overflow-wrap: anywhere; }
 .pick-item.danger .d { color: inherit; opacity: 0.85; }
 
 /* ---------------------------------------------------------------- toast */
@@ -1272,3 +1272,14 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .jt-more.inline { margin-left: 6px; }
 .long-text { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
 .long-text > .jt-more { display: block; margin-top: 4px; }
+
+/* A cross-harness handoff is reviewed before its new conversation starts. */
+.harness-handoff { display: contents; }
+.harness-handoff .modal { max-width: calc(100% - 16px); max-height: min(760px, calc(100dvh - 32px - env(safe-area-inset-top) - var(--safe-bottom))); }
+.handoff-intro { font-size: var(--fs); line-height: 1.5; color: var(--muted); margin: 0 0 8px; }
+.handoff-cwd { overflow-wrap: anywhere; margin-bottom: 14px; }
+.harness-handoff .modal-foot { flex-wrap: wrap; }
+.harness-handoff .handoff-pickers { flex: 1 0 100%; margin: 0 0 4px; }
+.handoff-pickers .bar-chips { flex: 1; }
+.handoff-context { max-height: 28dvh; font-size: var(--fs); }
+.harness-handoff .modal-head h2 { overflow-wrap: anywhere; }
