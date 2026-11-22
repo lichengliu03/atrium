@@ -1,7 +1,7 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Brain, ChevronRight, ChevronUp, FoldVertical, GitFork, Goal as GoalIcon, Info, Pencil, Sparkle, Square } from "lucide-react";
-import { api, EditAt, ForkAt, Goal, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings } from "../api";
+import { api, EditAt, ForkAt, Goal, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings, Upload } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
@@ -21,6 +21,7 @@ import { useVoiceInput } from "./Voice";
 import { MessageEditor } from "./MessageEditor";
 import { ScrollAids } from "./ScrollAids";
 import { GoalBar } from "./GoalBar";
+import { Outgoing, backToComposer, newMessageId, post, sentAttachments, useOutbox, useOutgoing } from "./outbox";
 
 type UserItem = Extract<Item, { kind: "user" }>;
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -483,6 +484,27 @@ function CommandText({ text }: { text: string }) {
   );
 }
 
+/** A message on its way (outbox), where it lands in the chat and as it will show there: faded until the server has it.
+ *  The room of the buttons it will have (`fork`, `edit`) is kept, so that its text wraps as it will then. */
+function OutgoingMessage({ o, fork, edit }: { o: Outgoing; fork: boolean; edit: boolean }) {
+  return (
+    <div className={clsx("msg-user-row outgoing", !o.sent && "sending")}>
+      {(fork || edit) && (
+        <div className="msg-actions" aria-hidden style={{ visibility: "hidden" }}>
+          {fork && <span className="icon-btn sm" />}
+          {edit && <span className="icon-btn sm" />}
+        </div>
+      )}
+      <div className={clsx("msg-user", o.command && "command")}>
+        {o.uploads.length ? <MessageAttachments items={sentAttachments(o.uploads)} /> : null}
+        {o.command ? <CommandText text={o.text} /> : o.text}
+      </div>
+    </div>
+  );
+}
+
+const errorText = (e: unknown) => (e instanceof Error && e.message) || String(e);
+
 /** Info line; a subagent's end links to it (it can land turns after its Agent row, which has a link of its own).
  *  A compaction is a rule across the chat that opens the conversation before it; a summary's text folds. What happens
  *  to the thread's goal, and each turn it starts, gets the goal's mark. */
@@ -568,7 +590,6 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   );
   const att = useAttachments([draft.attachments, setAttachments]);
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
   // where the agent carries on once its directory is gone (a removed worktree): picked here, applied on send
   const [ws, setWs] = useState<Workspace | null>(null);
   useEffect(() => setWs(null), [sid]);
@@ -578,6 +599,12 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // the session this chat shows (null once it's gone): a message that failed to go is written again here, if still here
+  const here = useRef<string | null>(sid);
+  useEffect(() => {
+    here.current = sid;
+    return () => void (here.current = null);
+  }, [sid]);
 
   // load snapshot + live stream (buffer live items until the snapshot lands)
   useEffect(() => {
@@ -614,8 +641,9 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
       if (!ready) buffer.push(msg.item);
       else queue(msg.item);
     });
-    const load = () =>
-      api
+    const load = () => {
+      const asked = performance.now();
+      return api
         .session(pid, sid)
         .then((snap) => {
           if (!alive) return;
@@ -632,11 +660,13 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
           setSt(s);
           setLoadedRow(snap.session);
           if (snap.settings) setSettings(snap.settings);
+          useOutbox.getState().settle(sid, s.seen, asked); // the messages on their way it has
           ready = true;
           buffer.length = 0;
         })
         .catch((e) => toast(String(e.message || e), "error"))
         .finally(() => alive && setLoading(false));
+    };
     void load();
     const offRe = socket.onReconnect(() => {
       ready = false;
@@ -650,11 +680,6 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     };
   }, [pid, sid, toast]);
 
-  // autoscroll when pinned to the bottom
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [st.items.length, st.streaming, Object.keys(st.pending).length, loading]);
   const onScroll = () => {
     const el = scrollRef.current;
     if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -675,71 +700,134 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     el.setSelectionRange(el.value.length, el.value.length);
   }, [sid, compact]);
 
+  // messages on their way (outbox): shown until their own items come
+  const outgoing = useOutgoing(sid);
+  const shown = useMemo(() => outgoing.filter((o) => !st.seen.has(o.id)), [outgoing, st.seen]);
+  useEffect(() => {
+    if (shown.length < outgoing.length) useOutbox.getState().settle(sid, st.seen);
+  }, [sid, outgoing, shown, st.seen]);
+  // a message being changed: the conversation before it, until the server has gone back there too (and the chat
+  // reloaded); the turn in progress, if any, is being stopped meanwhile
+  const items = useMemo(() => {
+    let end = st.items.length;
+    for (const o of shown) {
+      const i = o.edit ? st.items.findIndex((it) => "id" in it && it.id === o.edit) : -1;
+      if (i >= 0 && i < end) end = i;
+    }
+    return end < st.items.length ? st.items.slice(0, end) : st.items;
+  }, [st.items, shown]);
+  const cut = items !== st.items;
+  const streaming = cut ? "" : st.streaming;
+  const pendingList = cut ? [] : Object.values(st.pending);
+
+  // autoscroll when pinned to the bottom
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [items.length, shown.length, streaming, pendingList.length, loading]);
+
   const running = st.state === "running" || st.state === "starting" || st.state === "waiting";
-  const blocks = useMemo(() => toBlocks(st.items), [st.items]);
+  const blocks = useMemo(() => toBlocks(items), [items]);
   const harness = meta?.harnesses.find((h) => h.id === (harnessId ?? "claude-code")) ?? meta?.harnesses[0];
   const canFork = forkable && harness?.can_fork !== false;
-  const forks = useMemo(() => (canFork ? forkPoints(st.items) : null), [st.items, canFork]);
+  const forks = useMemo(() => (canFork ? forkPoints(items) : null), [items, canFork]);
   const onFork = useCallback((at: ForkAt, text: string) => setForkRequest({ sid, at, text }), [sid, setForkRequest]);
-  const steps = useMemo(() => (canFork ? stepForkPoints(st.items) : null), [st.items, canFork]);
+  const steps = useMemo(() => (canFork ? stepForkPoints(items) : null), [items, canFork]);
   const onForkStep = useCallback((at: ForkAt, step: string) => setForkRequest({ sid, at, step }), [sid, setForkRequest]);
-  // changing a message: the one being changed, if any
+  // changing a message: the one being changed, if any, and what was written in its place last time if that didn't go
   const canEdit = !!editable && !!harness?.can_edit;
-  const edits = useMemo(() => (canEdit ? editPoints(st.items) : null), [st.items, canEdit]);
+  const edits = useMemo(() => (canEdit ? editPoints(items) : null), [items, canEdit]);
+  const hasUser = useMemo(() => items.some((it) => it.kind === "user" && !it.command), [items]); // the first one can't be forked from
   const [editing, setEditing] = useState<string | null>(null);
-  useEffect(() => setEditing(null), [sid]);
+  const [editDraft, setEditDraft] = useState<{ text: string; uploads: Upload[] } | null>(null);
+  const openEditor = useCallback((id: string | null) => {
+    setEditing(id);
+    setEditDraft(null);
+  }, []);
+  useEffect(() => openEditor(null), [sid, openEditor]);
+  // for a change that failed: whether its message is still there to change again, and nothing else is being changed
+  const now = useRef({ items: st.items, editing });
+  useLayoutEffect(() => void (now.current = { items: st.items, editing }));
+  const sendEdit = useCallback(
+    (it: UserItem, at: EditAt, text: string, uploads: Upload[]) => {
+      stick.current = true;
+      openEditor(null);
+      const id = newMessageId();
+      post(
+        sid,
+        { id, text, uploads, edit: it.id },
+        () => api.editMessage(pid, sid, at, text, uploads.map((u) => u.id), id),
+        (e, later) => {
+          toast(errorText(e), "error");
+          if (here.current === sid && !now.current.editing && now.current.items.some((x) => "id" in x && x.id === it.id)) {
+            setEditing(it.id);
+            setEditDraft({ text, uploads });
+            backToComposer(sid, later);
+          } else backToComposer(sid, [{ text, uploads }, ...later]);
+        },
+      );
+    },
+    [pid, sid, toast, openEditor],
+  );
   const editor = useCallback(
     (it: UserItem, at: EditAt) => (
       <MessageEditor
-        pid={pid}
-        sid={sid}
         text={it.text}
         attachments={it.attachments ?? []}
-        at={at}
+        draft={editDraft}
         later={(edits?.size ?? 0) - at.user_index - 1}
         running={running}
-        onClose={() => setEditing(null)}
-        onSent={() => {
-          stick.current = true;
-          setEditing(null);
-        }}
+        onClose={() => openEditor(null)}
+        onSend={(text, uploads) => sendEdit(it, at, text, uploads)}
       />
     ),
-    [pid, sid, edits, running],
+    [edits, running, editDraft, openEditor, sendEdit],
   );
   const gone = !!row?.workspace_gone;
-  const moveTo: MoveWorkspace | null = !gone || !ws ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
-  const placed = !gone || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
-  const handoffBlocked = running || sending || loading || !!editing || att.uploading || gone || !!row?.pending;
+  // a message on its way moves the agent: what is sent meanwhile goes after it, where it went (and the pick stays until then)
+  const moving = outgoing.some((o) => o.move && o.sent === undefined);
+  const moveTo: MoveWorkspace | null =
+    !gone || !ws || moving ? null : ws.kind === "new" ? { kind: "new", branch: ws.branch.trim(), base: ws.base.trim() || undefined } : ws;
+  const placed = !gone || moving || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
+  const handoffBlocked = running || outgoing.length > 0 || loading || !!editing || att.uploading || gone || !!row?.pending;
   const target = meta?.harnesses.find((h) => h.id === handoffTarget);
-  const canSend = !handoffTarget && (!!text.trim() || att.ids.length > 0) && !att.uploading && !sending && placed;
+  const canSend = !handoffTarget && (!!text.trim() || att.ids.length > 0) && !att.uploading && placed;
   // a new worktree for an agent that lost its own starts out on that worktree's branch name
   const pickWs = (w: Workspace) => setWs(w.kind === "new" && !w.branch && row?.worktree && row.branch ? { ...w, branch: row.branch } : w);
 
-  // `override`: a slash command picked in the menu, sent instead of what's typed
-  const send = async (override?: string) => {
+  // `override`: a slash command picked in the menu, sent instead of what's typed. The message shows in the chat at
+  // once and the composer is free for the next one; what the server does first (start the agent again, move it) goes
+  // on meanwhile, and the message comes back here if it fails (outbox)
+  const send = (override?: string) => {
     const t = (override ?? text).trim();
-    if (!(t || att.ids.length) || att.uploading || sending || handoffTarget) return;
+    if (!(t || att.ids.length) || att.uploading || handoffTarget) return;
     if (forkable && atrium.run(t)) return setText(""); // an agent's chat (not the Git agent's)
     if (!placed) return;
-    setSending(true);
+    const id = newMessageId();
+    const uploads = att.items.flatMap((x) => (x.upload ? [x.upload] : []));
+    const command = /^\/\S/.test(t) && !!commands?.some((c) => c.prefix === "/" && [c.name, ...c.aliases].includes(t.slice(1).split(/\s/)[0]!));
+    const move = moveTo;
     stick.current = true;
-    try {
-      if (moveTo) {
-        await api.moveSession(pid, sid, moveTo);
-        setWs(null);
-        if (moveTo.kind === "new") void refreshProject();
-        await refreshSessions();
-      }
-      await api.send(pid, sid, t, att.ids);
-      setText("");
-      att.clear();
-    } catch (e: any) {
-      toast(e.message || String(e), "error");
-    } finally {
-      setSending(false);
-      inputRef.current?.focus();
-    }
+    setText("");
+    att.clear();
+    post(
+      sid,
+      { id, text: t, uploads, command, move: !!move },
+      async () => {
+        if (move) {
+          await api.moveSession(pid, sid, move);
+          if (move.kind === "new") void refreshProject();
+          await refreshSessions(); // its row no longer says gone: the pick has done its job
+          if (here.current === sid) setWs(null);
+        }
+        return api.send(pid, sid, t, uploads.map((u) => u.id), id);
+      },
+      (e, later) => {
+        toast(errorText(e), "error");
+        backToComposer(sid, [{ text: t, uploads }, ...later]);
+      },
+    );
+    if (!matchMedia("(pointer: coarse)").matches) inputRef.current?.focus(); // a finger that tapped send put the keyboard away
   };
 
   // the goal bar's buttons: /goal commands, sent as such (what's typed stays)
@@ -790,7 +878,6 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const shownModel = st.model || settings.model || defaults.model || harness?.config_model || "";
   const efforts = effortOptions(harness, shownModel || null);
   const baseEffort = defaults.effort || st.effort || harness?.config_effort; // in effect while no effort is picked
-  const pendingList = Object.values(st.pending);
   // slash commands: Atrium's own in an agent's chat, then the harness's
   const atrium = useAtriumCommands({
     pid, sid, harness: harness?.id, cwd, running, canFork: harness?.can_fork !== false, efforts, effort: settings.effort || baseEffort || "", setEffort,
@@ -798,7 +885,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const skills = harness?.id === "codex";
   const harnessCommands = useSlashCommands(pid, { sid }, text.startsWith("/") || (skills && text.includes("$")));
   const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);
-  const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => void send(t) });
+  const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => send(t) });
   const voice = useVoiceInput({ pid, sid, text, setText, input: inputRef });
   const barRef = useChatFloor(running && !canSend); // the queue button's room while it's away: typing doesn't move the column
 
@@ -817,11 +904,16 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
             {!loading && blocks.length === 0 && emptyHint}
             <Transcript
               blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
-              steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={setEditing} editor={editor}
+              steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={openEditor} editor={editor}
             />
-            {st.streaming && (
+            {shown.map((o, k) => {
+              // the buttons it will have: not a slash command's, nor a fork from the message that opens the conversation
+              const opens = !hasUser && shown.slice(0, k).every((x) => x.command);
+              return <OutgoingMessage key={o.id} o={o} fork={!!forks && !o.command && !opens} edit={!!edits && !o.command} />;
+            })}
+            {streaming && (
               <div className="msg-text stream-cursor">
-                <StreamingMarkdown text={st.streaming} />
+                <StreamingMarkdown text={streaming} />
               </div>
             )}
             <FileLinks cwd={cwd}>
@@ -829,7 +921,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
                 <PermissionCard key={p.id} perm={p} cwd={cwd} onDecide={(d) => decide(p, d)} />
               ))}
             </FileLinks>
-            {running && !st.streaming && pendingList.length === 0 && (
+            {(running || shown.length > 0) && !streaming && pendingList.length === 0 && (
               <div className="working-line">
                 <span className="spark">
                   <Sparkle size={15} fill="currentColor" />
@@ -870,7 +962,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
               if (slash.onKeyDown(e)) return;
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                void send();
+                send();
               }
             }}
           />
@@ -896,7 +988,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
             {running ? (
               <>
                 {canSend && (
-                  <button className="send-btn" disabled={sending} onClick={() => void send()} title={harnessId === "codex" ? "Steer the running turn" : "Queue message"}>
+                  <button className="send-btn" onClick={() => send()} title={harnessId === "codex" ? "Steer the running turn" : "Queue message"}>
                     <ArrowUp size={17} strokeWidth={2.4} />
                   </button>
                 )}
@@ -908,10 +1000,10 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
               <button
                 className="send-btn"
                 disabled={!canSend}
-                onClick={() => void send()}
-                title={gone && !moveTo ? "Pick where the agent continues first" : moveTo ? "Send (Enter) — moves the agent there first" : st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}
+                onClick={() => send()}
+                title={!placed ? "Pick where the agent continues first" : moveTo ? "Send (Enter) — moves the agent there first" : st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}
               >
-                {sending ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
+                <ArrowUp size={17} strokeWidth={2.4} />
               </button>
             )}
             </div>

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
@@ -37,6 +38,7 @@ from .todo_agent import todo_note
 log = logging.getLogger("atrium.sessions")
 
 TRANSIENT = {"delta", "state"}
+USER_ITEM_ID = re.compile(r"u-[0-9a-f]{12}")  # a message's id as the chat makes it, to show the message while it is sent
 MAX_SNAPSHOTS = 200
 FORGET_EMPTY_WORKTREES = 30 * 86400  # a removed worktree no session is found in is forgotten after this (seconds)
 BUSY = ("starting", "running", "waiting")
@@ -813,11 +815,13 @@ class SessionManager:
                                      role=meta.get("role", "worker"), model=model or meta.get("model"), effort=meta.get("effort"),
                                      mode=mode or meta.get("mode"), preload=preload)
 
-    async def edit(self, project: Project, sid: str, at: dict[str, Any], text: str, attachments: list[Attachment] | None = None) -> None:
+    async def edit(self, project: Project, sid: str, at: dict[str, Any], text: str, attachments: list[Attachment] | None = None,
+                   item_id: str | None = None) -> str:
         """Change one of the user's messages: the conversation goes back to just before it, and ``text`` is sent in its
         place. The message and everything after it are dropped from what the agent remembers; the files stay as they
         are. ``at`` = {item: the message's chat item id, anchor: the last item the harness produced before it (None:
-        none), user_index: its position among the user's messages}. A turn in progress is stopped first."""
+        none), user_index: its position among the user's messages}. A turn in progress is stopped first. ``item_id`` and
+        what it returns: as for ``send``."""
         cwd, harness_id = await self.session_info(project, sid)
         harness = get_harness(harness_id)
         if not harness.can_edit:
@@ -856,12 +860,16 @@ class SessionManager:
         if h.role == "worker":
             project.board.log(sid, "Went back to an earlier message and changed it", source="atrium")
         hub.publish(f"session:{sid}", {"type": "reload"})  # the chat shows the conversation as it is now
-        await self.send(project, sid, text, attachments)
+        return await self.send(project, sid, text, attachments, item_id=item_id)
 
-    async def send(self, project: Project, sid: str, text: str, attachments: list[Attachment] | None = None) -> None:
+    async def send(self, project: Project, sid: str, text: str, attachments: list[Attachment] | None = None, item_id: str | None = None) -> str:
+        """Returns the message's chat item id. ``item_id``: the one the chat gave it (``u-`` and 12 hex digits), which
+        shows it from the moment it is sent: its item keeps that id (unless taken), so the chat knows it for that one."""
         h = await self.ensure_live(project, sid)
         attachments = attachments or []
-        item: Item = {"kind": "user", "id": f"u-{uuid.uuid4().hex[:12]}", "text": text, "ts": time.time()}
+        if not (isinstance(item_id, str) and USER_ITEM_ID.fullmatch(item_id)) or item_id in h.index:
+            item_id = f"u-{uuid.uuid4().hex[:12]}"
+        item: Item = {"kind": "user", "id": item_id, "text": text, "ts": time.time()}
         if attachments:
             item["attachments"] = [{"name": a.name, "path": a.path, "mime": a.mime, "url": upload_url(a.path)} for a in attachments]
         if h.session and h.session.is_command(text):
@@ -876,6 +884,7 @@ class SessionManager:
             a = project.board.agent(sid)
             if not a or a.get("status") in (None, "idle", "done"):
                 project.board.update_agent(sid, status="working", doing=_short(text, 80) or "Working…", source="atrium")
+        return item_id
 
     async def commands(self, project: Project, *, sid: str | None = None, harness_id: str | None = None, cwd: str | None = None) -> list[dict[str, Any]]:
         """The slash commands for a session (its own list while it runs), or for a new one of ``harness_id`` in ``cwd``."""

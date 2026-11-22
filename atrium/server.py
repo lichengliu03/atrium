@@ -655,26 +655,27 @@ async def move_session(pid: str, sid: str, body: dict[str, Any] = Body(...)):
 
 @app.post("/api/p/{pid}/sessions/{sid}/send")
 async def send(pid: str, sid: str, body: dict[str, Any] = Body(...)):
+    """{text, attachments, id?}: ``id`` = the one the chat shows the message by while it is sent (sessions.send); the
+    answer's ``id`` is its item's."""
     text = (body.get("text") or "").strip()
     attachments = [attachment_from_upload(a) for a in body.get("attachments") or []]
     if not text and not attachments:
         raise HTTPException(400, "empty message")
-    await sessions.send(P(pid), sid, text, attachments)
-    return {"ok": True}
+    return {"ok": True, "id": await sessions.send(P(pid), sid, text, attachments, item_id=body.get("id"))}
 
 
 @app.post("/api/p/{pid}/sessions/{sid}/edit")
 async def edit_message(pid: str, sid: str, body: dict[str, Any] = Body(...)):
-    """Change a message already sent and carry on from there: {at: {item, anchor, user_index}, text, attachments}."""
+    """Change a message already sent and carry on from there: {at: {item, anchor, user_index}, text, attachments, id?}."""
     text = (body.get("text") or "").strip()
     attachments = [attachment_from_upload(a) for a in body.get("attachments") or []]
     if not text and not attachments:
         raise HTTPException(400, "empty message")
     try:
-        await sessions.edit(P(pid), sid, body.get("at") or {}, text, attachments)
+        item_id = await sessions.edit(P(pid), sid, body.get("at") or {}, text, attachments, item_id=body.get("id"))
     except (ValueError, NotImplementedError) as e:
         raise HTTPException(400, str(e))
-    return {"ok": True}
+    return {"ok": True, "id": item_id}
 
 
 @app.get("/api/p/{pid}/commands")

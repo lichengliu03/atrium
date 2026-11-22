@@ -353,6 +353,8 @@ a { color: var(--accent-strong); }
 .msg-edit { max-width: none; box-shadow: none; }
 .msg-edit .composer-input { max-height: none; }
 .msg-edit-hint { margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+/* a message on its way (outbox): faded until the server has it */
+.msg-user-row.sending > .msg-user { opacity: 0.6; }
 /* when a message was sent: in the gap above it, on the side it is on (a reply's left, the user's right), so that it
    reads as that message's and not as the one before's. On hover; for a finger, on a tap (data-time) */
 .timed { position: relative; }

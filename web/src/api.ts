@@ -764,11 +764,12 @@ export const api = {
       body,
     ),
   commands: (pid: string, where: { sid?: string; harness?: string; cwd?: string }) => req<SlashCommand[]>("GET", `/api/p/${pid}/commands${q(where)}`),
-  send: (pid: string, sid: string, text: string, attachments: string[] = []) =>
-    req("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments }),
+  /** `id`: the chat item's id the message gets (outbox), else the server makes one; the answer's is the one it got. */
+  send: (pid: string, sid: string, text: string, attachments: string[] = [], id?: string) =>
+    req<{ ok: boolean; id?: string }>("POST", `/api/p/${pid}/sessions/${sid}/send`, { text, attachments, id }),
   /** Change a message already sent: the conversation goes back to just before it and carries on with this one. */
-  editMessage: (pid: string, sid: string, at: EditAt, text: string, attachments: string[] = []) =>
-    req("POST", `/api/p/${pid}/sessions/${sid}/edit`, { at, text, attachments }),
+  editMessage: (pid: string, sid: string, at: EditAt, text: string, attachments: string[] = [], id?: string) =>
+    req<{ ok: boolean; id?: string }>("POST", `/api/p/${pid}/sessions/${sid}/edit`, { at, text, attachments, id }),
   attach: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/attach`, {}),
   interrupt: (pid: string, sid: string) => req("POST", `/api/p/${pid}/sessions/${sid}/interrupt`),
   setMode: (pid: string, sid: string, mode: string) => req("POST", `/api/p/${pid}/sessions/${sid}/mode`, { mode }),

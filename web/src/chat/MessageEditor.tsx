@@ -1,12 +1,12 @@
 // Changing a message already sent, in place of it in the chat: the conversation goes back to just before it and
-// carries on with what is sent from here (api.editMessage). The files the agent changed since stay as they are.
+// carries on with what is sent from here (api.editMessage, sent by the chat: outbox). The files the agent changed
+// since stay as they are.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, X } from "lucide-react";
-import { api, Attachment, EditAt } from "../api";
-import { useApp } from "../store";
+import type { Attachment, Upload } from "../api";
 import { clsx } from "../util";
-import { Spinner } from "../components/ui";
 import { AttachButton, AttachmentTray, PendingUpload, useAttachments } from "./Composer";
+import { pendingUploads } from "./outbox";
 
 const UPLOADS = "/api/uploads/";
 
@@ -20,28 +20,24 @@ function keptUploads(items: Attachment[]): PendingUpload[] {
   });
 }
 
-export function MessageEditor({ pid, sid, text: sent, attachments, at, later, running, onClose, onSent }: {
-  pid: string;
-  sid: string;
+export function MessageEditor({ text: sent, attachments, draft, later, running, onClose, onSend }: {
   text: string;
   attachments: Attachment[];
-  at: EditAt;
+  draft?: { text: string; uploads: Upload[] } | null; // what was sent in its place and didn't go: written again
   later: number; // the user's messages after this one, which go too
   running: boolean;
   onClose: () => void;
-  onSent: () => void;
+  onSend: (text: string, uploads: Upload[]) => void;
 }) {
-  const toast = useApp((s) => s.toast);
-  const [text, setText] = useState(sent);
-  const held = useState<PendingUpload[]>(() => keptUploads(attachments));
+  const [text, setText] = useState(draft?.text ?? sent);
+  const held = useState<PendingUpload[]>(() => (draft ? pendingUploads(draft.uploads) : keptUploads(attachments)));
   const att = useAttachments(held);
-  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // an image the transcript holds itself (Claude's history) comes as an upload (written out when the history is read);
   // one still inline, which couldn't be written, is uploaded again; one with neither can't be sent again
   const [lost, setLost] = useState(0);
   useEffect(() => {
-    const inline = attachments.filter((a) => a.url?.startsWith("data:"));
+    const inline = draft ? [] : attachments.filter((a) => a.url?.startsWith("data:")); // a draft has its uploads
     setLost(attachments.filter((a) => !a.url?.startsWith(UPLOADS) && !a.url?.startsWith("data:")).length);
     void Promise.all(inline.map((a) => fetch(a.url!).then((r) => r.blob()).then((b) => new File([b], `${a.name}.${(b.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: b.type }))))
       .then((files) => files.length && att.add(files))
@@ -62,18 +58,10 @@ export function MessageEditor({ pid, sid, text: sent, attachments, at, later, ru
     el?.setSelectionRange(el.value.length, el.value.length);
   }, []);
 
-  const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading && !busy;
-  const send = async () => {
-    if (!canSend) return;
-    setBusy(true);
-    try {
-      await api.editMessage(pid, sid, at, text.trim(), att.ids);
-      onSent();
-    } catch (e: any) {
-      toast(e.message || String(e), "error");
-      setBusy(false);
-      inputRef.current?.focus();
-    }
+  const canSend = (!!text.trim() || att.ids.length > 0) && !att.uploading;
+  // the chat takes it from here: the editor closes, and the message shows where it goes while it is sent
+  const send = () => {
+    if (canSend) onSend(text.trim(), att.items.flatMap((x) => (x.upload ? [x.upload] : [])));
   };
 
   const dropped = later ? `this message and the ${later === 1 ? "one" : later} after it are` : "this message is";
@@ -86,16 +74,15 @@ export function MessageEditor({ pid, sid, text: sent, attachments, at, later, ru
         className="composer-input"
         rows={1}
         value={text}
-        disabled={busy}
         onChange={(e) => setText(e.target.value)}
         onPaste={att.onPaste}
         onKeyDown={(e) => {
-          if (e.key === "Escape" && !busy) {
+          if (e.key === "Escape") {
             e.preventDefault();
             onClose();
           } else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
-            void send();
+            send();
           }
         }}
       />
@@ -108,11 +95,11 @@ export function MessageEditor({ pid, sid, text: sent, attachments, at, later, ru
           <AttachButton onClick={att.open} />
         </div>
         <div className="bar-end">
-          <button className="icon-btn" onClick={onClose} disabled={busy} aria-label="Cancel" data-tip="Cancel (Esc)">
+          <button className="icon-btn" onClick={onClose} aria-label="Cancel" data-tip="Cancel (Esc)">
             <X size={16} />
           </button>
-          <button className="send-btn" onClick={() => void send()} disabled={!canSend} aria-label="Send" data-tip="Send instead (Enter)">
-            {busy ? <Spinner /> : <ArrowUp size={17} strokeWidth={2.4} />}
+          <button className="send-btn" onClick={send} disabled={!canSend} aria-label="Send" data-tip="Send instead (Enter)">
+            <ArrowUp size={17} strokeWidth={2.4} />
           </button>
         </div>
       </div>
