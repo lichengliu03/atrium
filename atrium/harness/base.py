@@ -419,9 +419,10 @@ class Harness(ABC):
 
     @abstractmethod
     async def complete_json(
-        self, *, system: str, prompt: str, schema: dict[str, Any], model: str | None, effort: str | None, cwd: str
+        self, *, system: str, prompt: str, schema: dict[str, Any], model: str | None, effort: str | None, cwd: str, capture: Any = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """One-shot structured completion (used by the tracker). Returns (data, usage_info)."""
+        """One-shot structured completion (used by the tracker). Returns (data, usage_info). ``capture``: a
+        ``capture.CaptureContext`` (``oneshot``), as ``LiveSpec.capture``."""
 
     async def catalog(self) -> dict[str, Any]:
         """``describe()`` plus anything that must be fetched (e.g. the model list)."""

@@ -100,13 +100,14 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
      endpoint of Antigravity, the `base_url` of Grok Build's custom models) at a proxy of its own on a loopback
      port, which sends each call on unchanged and records it with credentials blanked. The tab follows the
      selected agent and groups its calls by the message each turn answers: the agent's loop, subagents, side
-     calls such as titles. Each call is laid out
+     calls such as titles. Its title's menu has Atrium's own agents too: the agent's Code Review Agent, the
+     Git Agent, the Tracker (each run a turn). Each call is laid out
      (settings, system prompt, tools, messages, with what the call before didn't have marked, and the
      answer); its stream is shown event by event, both bodies as they were. It shows how each harness works
      underneath. `capture` in the settings turns it off and caps what is kept (1 GB). Compactions are marked
      (*Compact*) and kept, with the agent's last call before each: they hold the whole conversation the compaction
-     replaced, so pruning leaves them. Grok Build's calls aren't recorded: only its own `config.toml` says where a
-     model's calls go.
+     replaced, so pruning leaves them. Grok Build's are recorded for its custom models; its calls to xAI's own
+     endpoints go out directly.
    * **Git** — commit graph with lanes (pick a commit: its files as a tree, each one diffed side by
      side against the first parent, renames followed); *Smart* / *All* / *Custom* branch sets, and an
      **Agent view**: the **Git Agent** (a chat drawer) investigates with read-only git and drives

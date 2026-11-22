@@ -408,6 +408,7 @@ class SessionManager:
                 "name": m.get("name"),
                 "title": title,
                 "role": m.get("role", "worker"),
+                "reviews": m.get("reviews"),  # a Code Review Agent's: the agent it reviews
                 "cwd": real or cwd,
                 "worktree": wt is not None,
                 "branch": branch,

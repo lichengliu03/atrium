@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import changes, snapshots
 from .board.prompts import TRACKER_SCHEMA, TRACKER_SYSTEM
+from .capture import CaptureContext
 from .config import RUNTIME_DIR, config
 from .events import hub
 from .harness import get_harness
@@ -39,6 +40,8 @@ MAX_ACTIVITY_CHARS = 42_000  # shared by the sessions with new activity, within 
 MAX_PROMPT_CHARS = 60_000
 MODEL_TIMEOUT = 300  # a model call that hangs must not stop the tracker; the next run takes its activity too
 OMITTED_MARK = 40  # room for the "… (n earlier events omitted) …" line
+TRACKER_SESSION = "tracker"  # what its model calls are recorded under (capture.py), each run a turn
+RUN_REASONS = {"periodic": "Periodic run", "after-turn": "Run after a turn ended", "manual": "Run on request"}
 
 
 def _ago(ts: float | None) -> str:
@@ -94,6 +97,8 @@ class Tracker:
         self.running = False
         self._edits_cache: dict[str, tuple[tuple[int, int], int]] = {}  # transcript -> ((size, snapshots), files_changed)
         self._skip: dict[str, int] = {}  # transcript -> offset to start from (forks: the copied history)
+        self._turn: dict[str, Any] | None = None  # the run in progress, for its model calls
+        self.capture = CaptureContext(project.id, lambda: TRACKER_SESSION, lambda _sid: self._turn, oneshot=True)
         self.cwd = str(RUNTIME_DIR / "tracker")
         os.makedirs(self.cwd, exist_ok=True)
 
@@ -229,6 +234,7 @@ class Tracker:
         hub.publish(f"project:{self.project.id}", {"type": "tracker", "running": True})
         started = time.time()
         record: dict[str, Any] = {"ts": started, "reason": reason}
+        self._turn = {"id": f"run-{started:.3f}", "text": RUN_REASONS.get(reason, reason), "ts": started}
         try:
             record.update(await self._run(force))
         except Exception as e:
@@ -345,7 +351,7 @@ class Tracker:
             async with deadline:
                 data, usage = await harness.complete_json(
                     system=TRACKER_SYSTEM, prompt=prompt, schema=TRACKER_SCHEMA, model=config.get("tracker.model") or None,
-                    effort=config.get("tracker.effort") or None, cwd=self.cwd,
+                    effort=config.get("tracker.effort") or None, cwd=self.cwd, capture=self.capture,
                 )
         except TimeoutError:
             if not deadline.expired():  # the harness's own (a Codex request's), which says what timed out

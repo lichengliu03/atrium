@@ -1,6 +1,7 @@
 """What the harnesses send to their model APIs, and what comes back.
 
-Every live agent's model calls go through a reverse proxy that Atrium runs on a loopback port of its own.
+Every live agent's model calls (the Git and Review Agents' too), and the Tracker's, go through a reverse proxy that
+Atrium runs on a loopback port of its own.
 Atrium points the agent's base URL (Claude Code's ``ANTHROPIC_BASE_URL``, the ``base_url`` of the Codex
 model provider, the Gemini endpoint of Antigravity, the ``base_url`` of Grok Build's custom models) at
 ``http://127.0.0.1:<port>/<token>``. The proxy sends each request on, unchanged, to where the harness would
@@ -101,12 +102,16 @@ RELEASE_DAYS = 7  # a session Atrium no longer finds: its kept calls are pruned 
 class CaptureContext:
     """A live agent's handle on the capture (``LiveSpec.capture``): its harness asks it which base URL to give
     the CLI. ``session`` and ``turn`` come from Atrium: the agent's id (a new Codex thread has one only once
-    it started), and the user message the turn in progress answers."""
+    it started), and the user message the turn in progress answers. ``oneshot``: the context of the Tracker's calls
+    (``Harness.complete_json``), all recorded under the id it stands for: each makes a session (a Codex thread) of its
+    own, and none has subagents, so a call of it with tools is its own loop."""
 
-    def __init__(self, project: str, session: Callable[[], str | None], turn: Callable[[str], dict[str, Any] | None]):
+    def __init__(self, project: str, session: Callable[[], str | None], turn: Callable[[str], dict[str, Any] | None],
+                 oneshot: bool = False):
         self.project = project
         self.session = session
         self.turn = turn
+        self.oneshot = oneshot
         self.tokens: dict[tuple[Any, ...], str] = {}  # a route's (harness, upstream, proxy, session, tls, secret) → its token
 
     def base_url(self, harness: str, upstream: str, *, env: Mapping[str, str] | None = None, session: str | None = None,
@@ -170,7 +175,8 @@ class Route:
         proxy = self.proxy and urllib.parse.urlsplit(self.proxy)
         return {"harness": self.harness, "upstream": self.upstream, "session": self.session,
                 "proxy": proxy and urllib.parse.urlunsplit(proxy._replace(netloc=proxy.netloc.rsplit("@", 1)[-1])),
-                "cas": list(self.tls.cas), "cert": self.tls.cert, "key": self.tls.key, "secret": sorted(self.secret)}
+                "cas": list(self.tls.cas), "cert": self.tls.cert, "key": self.tls.key, "secret": sorted(self.secret),
+                "oneshot": self.context.oneshot}
 
 
 def _bypassed(host: str, no_proxy: str) -> bool:
@@ -952,8 +958,8 @@ class Capture:
         project, spec = got
         session = spec.get("session")
         tls = Tls(tuple(spec.get("cas") or ()), spec.get("cert"), spec.get("key"))
-        route = Route(token, project, spec["harness"], spec["upstream"], spec.get("proxy"), CaptureContext(project, lambda: session, self.turn_of),
-                      session, tls, frozenset(spec.get("secret") or ()))
+        context = CaptureContext(project, lambda: session, self.turn_of, oneshot=bool(spec.get("oneshot")))
+        route = Route(token, project, spec["harness"], spec["upstream"], spec.get("proxy"), context, session, tls, frozenset(spec.get("secret") or ()))
         try:
             self._client(route.proxy, tls)
         except (OSError, ValueError, ssl.SSLError) as e:
@@ -1077,10 +1083,12 @@ class Capture:
                 summary = {"api": api_of(rec.meta["path"])}
             sid, thread, head = rec.meta["session"], summary.get("thread"), conversation_head(summary["api"], body)
             rec.conv = f"{thread if thread and thread != sid else ''}:{head}" if head else None
-            if thread and thread == sid:  # Codex: the agent's own thread; another one is a sub-agent's
+            if thread and (thread == sid or rec.route.context.oneshot):  # Codex: the agent's own thread (the Tracker's: each run's); another one is a sub-agent's
                 summary.pop("thread")
             elif thread and summary.get("kind") == "agent":
                 summary["kind"] = "sub"
+            if rec.route.context.oneshot and summary.get("kind") == "sub":  # Claude Code's: tools, but no Agent tool
+                summary["kind"] = "agent"
             rec.keep = "compact" if summary.get("kind") == "compact" else None
             rec.meta["summary"] = summary
             kept: list[dict[str, Any]] = []

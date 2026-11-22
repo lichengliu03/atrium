@@ -145,7 +145,7 @@ def agent_env() -> dict[str, str]:
     return {**os.environ, **loopback_env(os.environ), "GROK_DISABLE_AUTOUPDATER": "1"}
 
 
-def capture_env(spec: LiveSpec, session_id: str, env: dict[str, str]) -> dict[str, str]:
+def capture_env(capture: Any, session_id: str | None, env: dict[str, str]) -> dict[str, str]:
     """``GROK_CAMPAIGNS_OVERRIDE`` sending the session's model calls through Atrium's capture proxy (capture.py): a campaign
     of Atrium's (config patches, which apply over config.toml) setting the ``base_url`` (and ``api_base_url``) of each
     custom model, its own or its ``[model_providers]`` entry's, to the proxy's. The variable replaces every other source
@@ -154,7 +154,7 @@ def capture_env(spec: LiveSpec, session_id: str, env: dict[str, str]) -> dict[st
     Empty when capture is off, or no model has an address of its own: xAI's endpoints, which depend on the sign-in, are
     reached directly, and so is a model with an mTLS identity, and every model when Grok lists them from the endpoint of
     an external sign-in (it then drops a model whose address is on another host, as the proxy's would be)."""
-    if not spec.capture:
+    if not capture:
         return {}
     cfg = user_config()
     layers = [_toml(SYSTEM_DIR / "requirements.toml"), _toml(grok_home() / "requirements.toml"), cfg,
@@ -176,7 +176,7 @@ def capture_env(spec: LiveSpec, session_id: str, env: dict[str, str]) -> dict[st
             raw = m.get(field) or provider.get(field)  # the model's own wins, as in Grok
             upstream = os.path.expandvars(raw) if isinstance(raw, str) else ""  # Grok expands $VAR and ${VAR}
             if upstream and "$" not in upstream:
-                url = spec.capture.base_url("grok", upstream, env=env, session=session_id, secret=headers)
+                url = capture.base_url("grok", upstream, env=env, session=session_id, secret=headers)
                 if url:
                     patch.setdefault(key, {})[field] = url
     if not patch:
@@ -882,7 +882,7 @@ class GrokLiveSession(LiveSession):
         if not binary:
             raise FileNotFoundError(not_found(_defaults().get("binary") or ""))
         env = agent_env()
-        env.update(capture_env(self.spec, self.session_id, env))
+        env.update(capture_env(self.spec.capture, self.session_id, env))
         self.client = AcpClient([binary, "--no-auto-update", "agent", "stdio"], cwd=self.spec.cwd, env=env,
                                 on_notify=self._on_notify, on_request=self._on_request, name=f"grok {self.session_id[:8]}")
         await self.client.start()
@@ -1729,7 +1729,7 @@ class GrokHarness(Harness):
     def create_live(self, spec: LiveSpec, emit: Emit) -> LiveSession:
         return GrokLiveSession(self, spec, emit)
 
-    async def complete_json(self, *, system, prompt, schema, model, effort, cwd):
+    async def complete_json(self, *, system, prompt, schema, model, effort, cwd, capture=None):
         binary = resolve_binary()
         if not binary:
             raise RuntimeError(not_found(_defaults().get("binary") or ""))
@@ -1750,7 +1750,9 @@ class GrokHarness(Harness):
                 argv += ["-m", model]
             if effort:
                 argv += ["--reasoning-effort", effort]
-            proc = await asyncio.create_subprocess_exec(*argv, cwd=cwd, env=agent_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            env = agent_env()
+            env.update(capture_env(capture, capture and capture.session(), env))
+            proc = await asyncio.create_subprocess_exec(*argv, cwd=cwd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             try:
                 out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
             except asyncio.TimeoutError:

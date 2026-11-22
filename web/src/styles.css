@@ -1189,7 +1189,7 @@ details.review-tool > summary::-webkit-details-marker { display: none; }
 .home-archived[open] .chev { transform: rotate(90deg); }
 
 /* ---------------------------------------------------------------- Requests (panels/RequestsPanel.tsx) */
-.req-title { flex: 0 1 auto; min-width: 0; }
+.req-menu .section-label { padding: 8px 10px 2px; }
 .req-count { font-size: 12px; white-space: nowrap; flex: none; }
 .req-empty { padding: 28px 16px; font-size: 13px; text-align: center; }
 .req-pad { padding: 12px; }

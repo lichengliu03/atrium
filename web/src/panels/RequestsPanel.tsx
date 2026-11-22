@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
-import { ArrowDownLeft, ArrowLeft, ArrowUpRight, ChevronRight, Code, Copy, ListTree, Maximize2, Minimize2, Pin, RefreshCw, Trash2 } from "lucide-react";
-import { api, CaptureBody, CaptureDetail, CaptureRow, CaptureUsage } from "../api";
+import {
+  Activity, ArrowDownLeft, ArrowLeft, ArrowUpRight, Bot, Check, ChevronDown, ChevronRight, Code, Copy, ListTree, Maximize2, MessageSquareText, Minimize2, Pin,
+  RefreshCw, ScanSearch, Trash2,
+} from "lucide-react";
+import { api, CaptureBody, CaptureDetail, CaptureRow, CaptureUsage, SessionRow } from "../api";
 import { useApp, useAppState } from "../store";
 import { socket } from "../ws";
-import { clsx, displayName } from "../util";
+import { clsx, displayName, timeAgo } from "../util";
 import { JsonTree, LongText } from "../components/JsonTree";
-import { Spinner, startColResize, useFullscreen, useInterval } from "../components/ui";
+import { Popover, Spinner, startColResize, useFullscreen, useInterval } from "../components/ui";
 import { Answer, fmtBytes, fmtSeconds, fmtTokens, Message, parseAnswer, parseRequest, Part, Request, samePrefix, StreamEvent } from "./wire";
 
 // The Requests tab: what the selected agent sent to its model API, call by call, and what came back — recorded by
 // Atrium's capture proxy (capture.py). A list grouped by the user message each turn answers, beside the call picked.
+// The title's menu picks one of Atrium's own agents instead: the chat's agent's reviewer, the Git Agent, the Tracker.
 
 type Tab = "overview" | "request" | "response" | "raw";
 const TAB_KEY = "atrium.requestsTab";
@@ -29,6 +33,7 @@ const KEEP: Record<string, string> = {
   "before-compact": "Kept: the agent's last call before a compaction, the fullest history of what the compaction replaced. Pruning leaves it",
 };
 const LIVE = new Set(["pending", "streaming"]);
+const TRACKER = "tracker"; // what the Tracker's calls are recorded under (tracker.py's TRACKER_SESSION), each run a turn
 
 /** The calls looked at last, finished ones only (they don't change). A few: each holds a whole conversation. */
 class Recent {
@@ -103,6 +108,9 @@ function useNarrow(ref: RefObject<HTMLElement | null>) {
 export function RequestsPanel() {
   const { project, sessionId, sessions, toast } = useAppState("project", "sessionId", "sessions", "toast");
   const pid = project?.id;
+  // an agent of Atrium's own picked from the title's menu, until another agent is picked in the chat
+  const [pin, setPin] = useState<{ sid: string; from: string | null; pid?: string } | null>(null);
+  const sid = (pin && pin.from === sessionId && pin.pid === pid ? pin.sid : null) ?? sessionId;
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [full, toggleFull] = useFullscreen(ref);
@@ -114,9 +122,9 @@ export function RequestsPanel() {
   useEffect(() => void (width && localStorage.setItem(LIST_KEY, String(width))), [width]);
 
   const load = useCallback(() => {
-    if (!pid || !sessionId) return setData(null);
-    api.requests(pid, sessionId).then(setData, (e) => (setData({ enabled: true, running: true, rows: [] }), toast(e.message, "error")));
-  }, [pid, sessionId, toast]);
+    if (!pid || !sid) return setData(null);
+    api.requests(pid, sid).then(setData, (e) => (setData({ enabled: true, running: true, rows: [] }), toast(e.message, "error")));
+  }, [pid, sid, toast]);
   useEffect(() => {
     setData(null);
     setSel(null);
@@ -127,11 +135,11 @@ export function RequestsPanel() {
   useEffect(() => {
     if (!pid) return;
     return socket.subscribe(`project:${pid}`, (msg) => {
-      if (msg.type !== "capture" || msg.session_id !== sessionId) return;
+      if (msg.type !== "capture" || msg.session_id !== sid) return;
       if (msg.cleared) return setData((d) => d && { ...d, rows: [] });
       setData((d) => d && { ...d, rows: upsert(d.rows, msg.row) });
     });
-  }, [pid, sessionId]);
+  }, [pid, sid]);
   // beside the list, a call is shown from the start: the latest
   useEffect(() => {
     if (!narrow && !sel && data?.rows.length) setSel(data.rows[data.rows.length - 1].id);
@@ -140,11 +148,11 @@ export function RequestsPanel() {
   if (!project) return null;
   const rows = data?.rows ?? [];
   const row = rows.find((r) => r.id === sel) ?? null;
-  const agent = sessions.find((s) => s.id === sessionId);
+  const agent = sessions.find((s) => s.id === sid);
   const clear = async () => {
-    if (!pid || !sessionId || !confirm(`Delete the ${rows.length} recorded calls of this agent?`)) return;
+    if (!pid || !sid || !confirm(`Delete the ${rows.length} recorded calls of this agent?`)) return;
     try {
-      await api.clearRequests(pid, sessionId);
+      await api.clearRequests(pid, sid);
       cache.current.clear();
       setSel(null);
       load();
@@ -156,14 +164,27 @@ export function RequestsPanel() {
   return (
     <div ref={ref} className="panel-body fs-host req-panel">
       <div className="toolbar">
-        <span className="title ellipsis req-title">{agent ? displayName(agent) : "Requests"}</span>
+        <Popover
+          width={340}
+          within=".workspace"
+          fitHeight
+          trigger={(open, toggle) => (
+            // styled as the Board's page picker
+            <button className={clsx("page-pick", open && "on")} onClick={toggle} aria-expanded={open} aria-label="Whose model calls" data-tip="Whose model calls: the chat's agent, or one of Atrium's own">
+              <span className="title">{sid === TRACKER ? "Tracker Agent" : agent ? displayName(agent) : "Requests"}</span>
+              <ChevronDown size={13} />
+            </button>
+          )}
+        >
+          {(close) => <Targets sessionId={sessionId} sid={sid} sessions={sessions} onPick={(id) => (setPin(id ? { sid: id, from: sessionId, pid } : null), close())} />}
+        </Popover>
         {data && (
           <span className="faint req-count">
             {rows.length} calls{rows.some((r) => r.keep) ? ` · ${rows.filter((r) => r.keep).length} kept` : ""}
           </span>
         )}
         <span className="grow" />
-        <button className="icon-btn" aria-label="Refresh" data-tip="Refresh" onClick={load} disabled={!sessionId}>
+        <button className="icon-btn" aria-label="Refresh" data-tip="Refresh" onClick={load} disabled={!sid}>
           <RefreshCw size={14} />
         </button>
         <button className="icon-btn danger" aria-label="Delete these calls" data-tip="Delete this agent's recorded calls" onClick={() => void clear()} disabled={!rows.length}>
@@ -177,8 +198,8 @@ export function RequestsPanel() {
       {data && data.running && !data.enabled && (
         <div className="banner subtle">Capture is off (capture.enabled in Atrium's settings): agents started from now on aren't recorded.</div>
       )}
-      {!sessionId ? (
-        <div className="req-empty muted">Pick an agent: the calls it makes to its model show here.</div>
+      {!sid ? (
+        <div className="req-empty muted">Pick an agent: the calls it makes to its model show here. Atrium's own agents (the Tracker, the Git Agent) are in the menu above.</div>
       ) : (
         <div className="split req-split">
           {showList && (
@@ -214,6 +235,36 @@ export function RequestsPanel() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** The title's menu: the chat's agent (the tab follows it), or one of Atrium's own agents. */
+function Targets({ sessionId, sid, sessions, onPick }: { sessionId: string | null; sid: string | null; sessions: SessionRow[]; onPick: (id: string | null) => void }) {
+  const chat = sessions.find((s) => s.id === sessionId);
+  const reviewers = sessionId ? sessions.filter((s) => s.role === "review" && s.reviews === sessionId) : [];
+  const git = sessions.find((s) => s.role === "git" && !s.archived);
+  const item = (id: string | null, icon: ReactNode, name: string, d: string) => {
+    const on = (id ?? sessionId) === sid;
+    return (
+      <button key={id ?? ""} className={clsx("menu-item pick-item", on && "on")} onClick={() => onPick(id)}>
+        {icon}
+        <div className="grow" style={{ minWidth: 0 }}>
+          <div className="ellipsis">{name}</div>
+          <div className="d">{d}</div>
+        </div>
+        {on && <Check size={14} />}
+      </button>
+    );
+  };
+  return (
+    <div className="req-menu">
+      {chat ? item(null, <MessageSquareText size={15} />, displayName(chat), "The chat's agent: the tab follows it") : <div className="page-note">No agent picked in the chat.</div>}
+      <div className="menu-sep" />
+      <div className="section-label">Atrium's own agents</div>
+      {reviewers.map((r) => item(r.id, <ScanSearch size={15} />, displayName(r), `Reviews ${chat ? displayName(chat) : "it"} · ${timeAgo(r.updated_at)}`))}
+      {git && item(git.id, <Bot size={15} />, displayName(git), "Answers about the history, drives the Git tab's graph")}
+      {item(TRACKER, <Activity size={15} />, "Tracker Agent", "Reads what the agents did and updates the board")}
     </div>
   );
 }

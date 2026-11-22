@@ -226,6 +226,7 @@ export interface SessionRow {
   name: string | null;
   title: string;
   role: "worker" | "git" | "review";
+  reviews: string | null; // a Code Review Agent's: the agent it reviews
   cwd: string;
   worktree: boolean;
   branch: string | null;

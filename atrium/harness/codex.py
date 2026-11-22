@@ -508,6 +508,27 @@ def goal_turn_line(turn_id: str, ts: float | None = None) -> Item:
     return it
 
 
+async def capture_config(client: AppServerClient, capture: Any, cwd: str, session: str | None) -> dict[str, Any]:
+    """Config overrides sending a thread's model calls through Atrium's capture proxy (capture.py; ``capture``: the
+    agent's ``CaptureContext``): its model provider's base_url, for this thread alone. A thread keeps the config it was
+    loaded with, so this reaches one that is started, or resumed after it was unloaded. Nothing for a built-in provider
+    (OpenAI's, whose address depends on the login) or one on WebSockets."""
+    if not capture:
+        return {}
+    try:
+        cfg = (await client.request("config/read", {"cwd": cwd}, timeout=30)).get("config") or {}
+    except Exception as e:
+        log.warning("not capturing this Codex thread: config/read failed: %s", e)
+        return {}
+    pid = cfg.get("model_provider") or "openai"
+    provider = (cfg.get("model_providers") or {}).get(pid) or {}
+    if not provider.get("base_url") or provider.get("supports_websockets"):
+        return {}
+    headers = [*(provider.get("http_headers") or {}), *(provider.get("env_http_headers") or {})]  # blanked like credentials
+    url = capture.base_url("codex", provider["base_url"], session=session, secret=headers)
+    return {"model_providers": {pid: {"base_url": url}}} if url else {}
+
+
 # --------------------------------------------------------------------------
 # Live session
 # --------------------------------------------------------------------------
@@ -546,7 +567,7 @@ class CodexLiveSession(LiveSession):
             params["model"] = self.model
         if self.mode in MODE_POLICY:
             params["approvalPolicy"], params["sandbox"], params["approvalsReviewer"] = MODE_POLICY[self.mode]
-        capture = await self._capture_config()
+        capture = await capture_config(self.client, spec.capture, spec.cwd, self.session_id or None)
         if capture:
             params["config"] = capture
         try:
@@ -672,26 +693,6 @@ class CodexLiveSession(LiveSession):
         if state != self.state:
             self.state = state
             self.emit({"kind": "state", "state": state})
-
-    async def _capture_config(self) -> dict[str, Any]:
-        """Config overrides sending this thread's model calls through Atrium's capture proxy (capture.py): its model
-        provider's base_url, for this thread alone. A thread keeps the config it was loaded with, so this reaches one
-        that is started, or resumed after it was unloaded. Nothing for a built-in provider (OpenAI's, whose address
-        depends on the login) or one on WebSockets."""
-        if not self.spec.capture:
-            return {}
-        try:
-            cfg = (await self.client.request("config/read", {"cwd": self.spec.cwd}, timeout=30)).get("config") or {}
-        except Exception as e:
-            log.warning("not capturing this Codex thread: config/read failed: %s", e)
-            return {}
-        pid = cfg.get("model_provider") or "openai"
-        provider = (cfg.get("model_providers") or {}).get(pid) or {}
-        if not provider.get("base_url") or provider.get("supports_websockets"):
-            return {}
-        headers = [*(provider.get("http_headers") or {}), *(provider.get("env_http_headers") or {})]  # blanked like credentials
-        url = self.spec.capture.base_url("codex", provider["base_url"], session=self.session_id or None, secret=headers)
-        return {"model_providers": {pid: {"base_url": url}}} if url else {}
 
     async def _turn_command(self, name: str, args: str) -> None:
         """/compact and /review: turns of their own, started by their app-server methods."""
@@ -1616,12 +1617,15 @@ class CodexHarness(Harness):
     def create_live(self, spec: LiveSpec, emit: Emit) -> LiveSession:
         return CodexLiveSession(self, spec, emit)
 
-    async def complete_json(self, *, system, prompt, schema, model, effort, cwd):
+    async def complete_json(self, *, system, prompt, schema, model, effort, cwd, capture=None):
         started = time.time()
         params: dict[str, Any] = {"cwd": cwd, "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only",
                                   "developerInstructions": system, "serviceName": "atrium"}
         if model:
             params["model"] = model
+        overrides = await capture_config(self.client, capture, cwd, capture and capture.session())
+        if overrides:
+            params["config"] = overrides
         res = await self.client.request("thread/start", params)
         tid = res["thread"]["id"]
         done: asyncio.Future = asyncio.get_running_loop().create_future()

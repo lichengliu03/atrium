@@ -119,19 +119,19 @@ def _settings_env(cwd: str) -> dict[str, str]:
     return env
 
 
-def _capture_env(spec: LiveSpec, session_id: str) -> dict[str, str]:
+def _capture_env(capture: Any, cwd: str, session_id: str | None) -> dict[str, str]:
     """Flag-settings env sending the session's API calls through Atrium's capture proxy (capture.py): its address as
     ANTHROPIC_BASE_URL, and loopback in NO_PROXY so the CLI reaches it directly. Also the address it stands for, for the
     processes the agent starts (capture.unwrap_inherited), and, for Anthropic's own API, the CLI's switch that keeps
     it taken for that rather than for a gateway. Empty when capture is off, or when the calls go to Bedrock, Vertex or
     Foundry, whose endpoints don't take a base URL this way."""
-    if not spec.capture:
+    if not capture:
         return {}
-    env = _settings_env(spec.cwd)
+    env = _settings_env(cwd)
     if any(env.get(v, "").strip().lower() not in ("", "0", "false") for v in ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")):
         return {}
     upstream = env.get("ANTHROPIC_BASE_URL") or ""
-    url = spec.capture.base_url("claude-code", upstream or ANTHROPIC_API, env=env, session=session_id, secret=_custom_headers(env))
+    url = capture.base_url("claude-code", upstream or ANTHROPIC_API, env=env, session=session_id, secret=_custom_headers(env))
     if not url:
         return {}
     out = {"ANTHROPIC_BASE_URL": url, CAPTURE_URL_ENV: url, UPSTREAM_ENV: upstream, **loopback_env(env)}
@@ -310,7 +310,7 @@ class ClaudeLiveSession(LiveSession):
         self._stderr_tail: list[str] = []
         self._commands: list[dict[str, Any]] | None = None  # the CLI's slash commands (initialize response)
         self._command_names: set[str] = set()  # their names and aliases, plus what init messages list
-        self._env = _capture_env(spec, self.session_id)  # flag-settings env, sent again with every effort change
+        self._env = _capture_env(spec.capture, spec.cwd, self.session_id)  # flag-settings env, sent again with every effort change
 
     # ---- public API --------------------------------------------------------
     async def start(self) -> None:
@@ -1225,14 +1225,14 @@ class ClaudeCodeHarness(Harness):
     def create_live(self, spec: LiveSpec, emit: Emit) -> LiveSession:
         return ClaudeLiveSession(spec, emit)
 
-    async def complete_json(self, *, system, prompt, schema, model, effort, cwd):
+    async def complete_json(self, *, system, prompt, schema, model, effort, cwd, capture=None):
         opts = ClaudeAgentOptions(
             system_prompt=system,
             tools=[],
             max_turns=4,
             model=model or None,
             effort=effort or None,
-            settings=_effort_settings(effort),
+            settings=_effort_settings(effort, _capture_env(capture, cwd, capture and capture.session())),
             cwd=cwd,
             output_format={"type": "json_schema", "schema": schema},
             strict_mcp_config=True,

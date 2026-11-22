@@ -2264,7 +2264,7 @@ class AntigravityHarness(Harness):
     def create_live(self, spec: LiveSpec, emit: Emit) -> LiveSession:
         return AntigravityLiveSession(self, spec, emit)
 
-    async def complete_json(self, *, system, prompt, schema, model, effort, cwd):
+    async def complete_json(self, *, system, prompt, schema, model, effort, cwd, capture=None):
         from google.antigravity import Agent, CapabilitiesConfig, LocalAgentConfig
         from google.antigravity.types import BuiltinTools
 
@@ -2274,7 +2274,7 @@ class AntigravityHarness(Harness):
             await asyncio.to_thread(_warm_runtime)
             cfg = LocalAgentConfig(
                 system_instructions=system, capabilities=CapabilitiesConfig(enabled_tools=[BuiltinTools.FINISH], enable_subagents=False),
-                models=model_targets(model, effort), workspaces=[cwd], response_schema=schema,
+                models=model_targets(model, effort, capture, capture and capture.session()), workspaces=[cwd], response_schema=schema,
                 save_dir=os.path.join(scratch, "save"), app_data_dir=os.path.join(scratch, "data"),
             )
             async with Agent(cfg) as agent:

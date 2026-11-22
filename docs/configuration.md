@@ -288,6 +288,10 @@ call. Each call is laid out: its settings, system prompt, tools and messages (wi
 didn't have marked), and the answer. Beside that are the answer's stream event by event, and both bodies as
 they were.
 
+The tab follows the chat's agent. Its title opens a menu of Atrium's own agents, recorded like the others: the
+chat's agent's Code Review Agent, the Git Agent, and the Tracker (each of its runs a turn, on whichever harness
+`tracker.harness` names). Picking another agent in the chat goes back to following it.
+
 | Key | Default | |
 |---|---|---|
 | `capture.enabled` | `true` | Send agents' model calls through Atrium's capture proxy, and record them. Reaches agents whose process starts afterwards: new ones, and ones woken up after `sessions.idle_close_minutes` or an Atrium restart. Off, nothing more is recorded, and new agents call their API directly. |
@@ -359,7 +363,8 @@ What goes through it:
   afterwards.
 
 Anything else the harnesses send isn't recorded: telemetry, update checks, MCP servers over HTTP, the
-plugins Codex fetches, web pages.
+plugins Codex fetches, web pages. Nor are the calls Atrium makes itself, outside a harness: voice input's
+transcription and clean-up (`voice`).
 
 ## Claude Code
 

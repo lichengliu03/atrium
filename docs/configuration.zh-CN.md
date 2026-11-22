@@ -270,6 +270,10 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 参数、系统提示词、工具和消息（比上一次调用新增的会标出来），以及模型的回答。另外还能看响应流里的每个事件，
 以及原样的请求体和响应体。
 
+这个标签页跟着聊天里的 agent 走。点它的标题会打开一个菜单，里面是 Atrium 自己的 agent，它们的调用和其他 agent
+一样会被记录：聊天里这个 agent 的 Code Review Agent、Git Agent，以及 Tracker（每次运行算一轮，用 `tracker.harness`
+指定的 harness）。在聊天里换一个 agent，标签页就又跟着它走。
+
 | Key | 默认值 | 说明 |
 |---|---|---|
 | `capture.enabled` | `true` | 让 agent 的模型调用经过 Atrium 的抓包代理并记录下来。对之后启动进程的 agent 生效：新建的，以及在 `sessions.idle_close_minutes` 之后或 Atrium 重启之后被唤醒的。关掉后不再记录，新的 agent 直接调用自己的 API。 |
@@ -330,7 +334,8 @@ agent 的 base URL 指向它。代理把每个请求原样转发到 harness 本�
   以及 Grok 通过 `[auth] auth_provider_command` 登录、又从这样的端点列出模型时的所有模型（这时 Grok 会去掉地址在其他
   主机上的模型，换成代理的地址正属于这种）。新加进 `config.toml` 的模型，在之后启动的 agent 里才会被抓包。
 
-harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。
+harness 发出的其他流量不会被记录：遥测、更新检查、走 HTTP 的 MCP 服务器、Codex 拉取的插件、网页。Atrium 自己
+在 harness 之外发的调用也不记录：语音输入的转写和整理（`voice`）。
 
 ## Claude Code
 
