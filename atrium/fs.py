@@ -159,23 +159,26 @@ class Sites:
 sites = Sites()
 
 
-def _everything(folder: str) -> bool:
-    """A folder that holds everything, or much of it: the file system's root or a folder right in it (/opt, /etc), the
-    home directory, one above it or right in it (~/Downloads, ~/Documents…), a temporary one."""
+def _not_served(folder: str) -> bool:
+    """For a page outside the project, a folder its preview isn't given, as its scripts could read too much there: one
+    that holds everything or much of it (the file system's root or a folder right in it, /opt, /etc; a disk, mounted in
+    /Volumes; the home directory, one above it or right in it, ~/Downloads; a temporary one), or one inside a hidden
+    folder (~/.config/<tool>, ~/.atrium/uploads)."""
     home = os.path.realpath(os.path.expanduser("~"))
     temp = {os.path.realpath(d) for d in ("/tmp", "/var/tmp", tempfile.gettempdir())}
     top = folder[8:] if folder.startswith("/private/") else folder  # macOS: /etc, /tmp and /var are in /private
-    return (folder in temp or os.path.dirname(top) == os.path.dirname(os.path.dirname(top))
-            or home in (folder, os.path.dirname(folder)) or home.startswith(folder.rstrip(os.sep) + os.sep))
+    return (folder in temp or os.path.dirname(top) == os.path.dirname(os.path.dirname(top)) or os.path.ismount(folder)
+            or home in (folder, os.path.dirname(folder)) or home.startswith(folder.rstrip(os.sep) + os.sep)
+            or any(seg.startswith(".") for seg in folder.split(os.sep)))
 
 
 def site_url(project: Project, root: str | None, rel: str) -> dict[str, Any]:
     """Where the page ``rel`` is served for its preview: what it loads by a relative URL resolves beside it. A page
-    outside the project has its folder served too, unless that folder holds everything (_everything): its scripts
-    could read any of it. It is shown without it then."""
+    outside the project has its folder served too, unless its scripts could read too much there (_not_served). It is
+    shown without it then."""
     root = os.path.realpath(root or project.path)
     p, inner = project.locate(rel, root=root)
-    if not inner and _everything(str(p.parent)):
+    if not inner and _not_served(str(p.parent)):
         raise PermissionError(f"{p.parent} is not served for a page's preview")
     return {"url": f"/api/site/{sites.key(project.id, str(p.parent))}/{quote(p.name)}"}
 
@@ -279,8 +282,17 @@ def resolve_paths(project: Project, cwd: str | None, paths: list[str], fresh: bo
     return out
 
 
-def write_file(project: Project, root: str | None, rel: str, content: str, base_sha: str | None = None, force: bool = False) -> dict[str, Any]:
+def _checkout(project: Project, root: str | None) -> str:
+    """The project directory or worktree a write goes to. One that is gone (a worktree removed, or its folder deleted)
+    is refused: the write's mkdir would make its folder again."""
     root = os.path.realpath(root or project.path)
+    if not os.path.isdir(root):
+        raise FileNotFoundError(root)
+    return root
+
+
+def write_file(project: Project, root: str | None, rel: str, content: str, base_sha: str | None = None, force: bool = False) -> dict[str, Any]:
+    root = _checkout(project, root)
     p = project.resolve(rel, root=root)
     if p.exists() and base_sha and not force:
         cur = sha_of(p.read_bytes())
@@ -297,7 +309,7 @@ def write_file(project: Project, root: str | None, rel: str, content: str, base_
 
 
 def create(project: Project, root: str | None, rel: str, kind: str) -> dict[str, Any]:
-    root = os.path.realpath(root or project.path)
+    root = _checkout(project, root)
     p = project.resolve(rel, root=root)
     if p.exists():
         raise FileExistsError(rel)
@@ -310,7 +322,7 @@ def create(project: Project, root: str | None, rel: str, kind: str) -> dict[str,
 
 
 def rename(project: Project, root: str | None, src: str, dst: str) -> dict[str, Any]:
-    root = os.path.realpath(root or project.path)
+    root = _checkout(project, root)
     a = project.resolve(src, root=root)
     b = project.resolve(dst, root=root)
     if b.exists():

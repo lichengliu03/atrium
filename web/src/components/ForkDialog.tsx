@@ -39,7 +39,7 @@ function ForkForm({ req }: { req: ForkRequest }) {
     const cwd = src?.cwd ?? "";
     return [...worktrees].filter((w) => cwd === w.path || cwd.startsWith(w.path + "/")).sort((a, b) => b.path.length - a.path.length)[0]?.path;
   }, [worktrees, src?.cwd]);
-  const others = worktrees.filter((w) => w.path !== srcRoot);
+  const others = worktrees.filter((w) => w.path !== srcRoot && !w.prunable); // gone (prunable): the fork couldn't start there
 
   const [branches, setBranches] = useState<Set<string>>(new Set());
   const [kind, setKind] = useState<ForkWorkspace["kind"]>(isGit ? "new" : "same");

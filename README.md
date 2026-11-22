@@ -64,7 +64,8 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
      agent's directory (its worktree), or by the end of a path (`api.ts`) when only one file has it.
      Only paths that are files get a link. A file outside the project (a report an agent left in
      `/tmp`, a download) opens too, read-only; a page's folder is served for its preview unless it
-     is `/tmp` itself, a top-level folder, your home or a folder right in it.
+     is `/tmp` itself, a top-level folder, a disk, your home or a folder right in it, or a folder
+     inside a hidden one.
    * **Changes** — per-agent diffs. The baseline is a **git snapshot** Atrium takes at the start and
      end of every turn (a tree object written through a temporary index — no refs, your index and
      stash are untouched). Files changed by shell commands are detected by diffing those snapshots.

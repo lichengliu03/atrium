@@ -124,6 +124,11 @@ export function FilesPanel() {
     setOpen([]);
     setActive(null);
   }, [project?.id]);
+  // the worktree shown is gone (removed, or its folder deleted): back to the project's own tree, which the picker can
+  // show (it has no entry for a root that isn't listed)
+  useEffect(() => {
+    if (project && root !== project.path && !roots.some((r) => r.path === root)) setRoot(project.path);
+  }, [project, root, roots]);
   // unsaved edits go with this panel when the project is left: the store asks first
   const setUnsaved = useApp((s) => s.setUnsaved);
   useEffect(() => setUnsaved(open.filter((f) => f.content !== f.saved).map((f) => basename(f.path))), [open, setUnsaved]);
