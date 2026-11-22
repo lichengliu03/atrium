@@ -62,7 +62,9 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
      PDFs, audio and video. The files an agent names in its replies open here with a tap — in
      backticks, as a Markdown link or in the text itself, `path:line` at that line; relative to the
      agent's directory (its worktree), or by the end of a path (`api.ts`) when only one file has it.
-     Only paths that are files get a link.
+     Only paths that are files get a link. A file outside the project (a report an agent left in
+     `/tmp`, a download) opens too, read-only; a page's folder is served for its preview unless it
+     is `/tmp` itself, a top-level folder, your home or a folder right in it.
    * **Changes** — per-agent diffs. The baseline is a **git snapshot** Atrium takes at the start and
      end of every turn (a tree object written through a temporary index — no refs, your index and
      stash are untouched). Files changed by shell commands are detected by diffing those snapshots.

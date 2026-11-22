@@ -209,6 +209,7 @@ export const useApp = create<AppState>((set, get) => {
       }
       socket.onReconnect(() => {
         void get().refreshSessions();
+        get().refreshProject().catch(() => undefined); // its worktrees: one added or removed while the socket was down went unheard
         set((s) => ({ boardVersion: s.boardVersion + 1, gitVersion: s.gitVersion + 1, trackerVersion: s.trackerVersion + 1, terminalVersion: s.terminalVersion + 1 }));
       });
     },

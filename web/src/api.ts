@@ -441,9 +441,10 @@ export interface DirEntry {
 }
 
 export interface FileData {
-  root: string;
-  path: string;
+  root: string; // "" outside the project
+  path: string; // relative to root; absolute outside the project
   abs: string;
+  external?: boolean; // outside the project (an agent's report in /tmp, a download): read-only
   size: number;
   mtime: number;
   binary: boolean;
@@ -820,7 +821,8 @@ export const api = {
   rawFileUrl: (pid: string, path: string, root?: string, v?: string | null) => `/api/p/${pid}/file/raw${q({ path, root, v })}`,
   /** where an HTML file is served for its preview, so that what it loads by a relative URL resolves beside it */
   fileSite: (pid: string, path: string, root?: string) => req<{ url: string }>("GET", `/api/p/${pid}/file/site${q({ path, root })}`),
-  /** which of `paths`, as an agent working in `cwd` wrote them, are files of the project, and where (null: none) */
+  /** which of `paths`, as an agent working in `cwd` wrote them, are files, and where (null: none; `root` "": outside
+   *  the project, `path` absolute) */
   resolvePaths: (pid: string, cwd: string, paths: string[], fresh = false) =>
     req<{ files: Record<string, { root: string; path: string } | null> }>("POST", `/api/p/${pid}/file/resolve`, { cwd, paths, fresh }),
   writeFile: (pid: string, body: { root?: string; path: string; content: string; base_sha?: string | null; force?: boolean }) =>

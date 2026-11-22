@@ -1,4 +1,4 @@
-"""File-system access for the editor (scoped to a project and its worktrees)."""
+"""File-system access for the editor (scoped to a project and its worktrees; a file elsewhere is read, never written)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import mimetypes
 import os
 import secrets
 import shutil
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -85,9 +86,13 @@ def read_text(path: Path) -> str | None:
 
 def read_file(project: Project, root: str | None, rel: str) -> dict[str, Any]:
     root = os.path.realpath(root or project.path)
-    p = project.resolve(rel, root=root)
+    p, inner = project.locate(rel, root=root)
+    if not p.is_file():  # a folder too: what an agent names in a tool call may be one
+        raise FileNotFoundError(rel)
     st = p.stat()
-    info: dict[str, Any] = {"root": root, "path": _rel(root, p), "abs": str(p), "size": st.st_size, "mtime": st.st_mtime}
+    # outside the project (an agent's report in /tmp, a download): by its own path, for the Files panel to show read-only
+    where = {"root": root, "path": _rel(root, p)} if inner else {"root": "", "path": str(p), "external": True}
+    info: dict[str, Any] = {**where, "abs": str(p), "size": st.st_size, "mtime": st.st_mtime}
     if st.st_size > MAX_TEXT:
         return {**info, "binary": True, "too_large": True, "content": None, "sha": None}
     data = p.read_bytes()
@@ -117,7 +122,7 @@ def raw_headers(mime: str, scripts: bool = False) -> dict[str, str]:
 
 def raw_file(project: Project, root: str | None, rel: str) -> tuple[Path, str]:
     root = os.path.realpath(root or project.path)
-    p = project.resolve(rel, root=root)
+    p, _ = project.locate(rel, root=root)  # outside the project too, as read_file
     if not p.is_file():
         raise FileNotFoundError(rel)
     return p, mime_of(p)
@@ -154,15 +159,29 @@ class Sites:
 sites = Sites()
 
 
+def _everything(folder: str) -> bool:
+    """A folder that holds everything, or much of it: the file system's root or a folder right in it (/opt, /etc), the
+    home directory, one above it or right in it (~/Downloads, ~/Documents…), a temporary one."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    temp = {os.path.realpath(d) for d in ("/tmp", "/var/tmp", tempfile.gettempdir())}
+    top = folder[8:] if folder.startswith("/private/") else folder  # macOS: /etc, /tmp and /var are in /private
+    return (folder in temp or os.path.dirname(top) == os.path.dirname(os.path.dirname(top))
+            or home in (folder, os.path.dirname(folder)) or home.startswith(folder.rstrip(os.sep) + os.sep))
+
+
 def site_url(project: Project, root: str | None, rel: str) -> dict[str, Any]:
-    """Where the page ``rel`` is served for its preview: what it loads by a relative URL resolves beside it."""
+    """Where the page ``rel`` is served for its preview: what it loads by a relative URL resolves beside it. A page
+    outside the project has its folder served too, unless that folder holds everything (_everything): its scripts
+    could read any of it. It is shown without it then."""
     root = os.path.realpath(root or project.path)
-    p = project.resolve(rel, root=root)
+    p, inner = project.locate(rel, root=root)
+    if not inner and _everything(str(p.parent)):
+        raise PermissionError(f"{p.parent} is not served for a page's preview")
     return {"url": f"/api/site/{sites.key(project.id, str(p.parent))}/{quote(p.name)}"}
 
 
 def site_file(project: Project, folder: str, rel: str) -> tuple[Path, str]:
-    p = project.resolve(os.path.join(folder, rel))
+    p, _ = project.locate(os.path.join(folder, rel))  # the folder may be outside the project (site_url)
     inner = os.path.relpath(p, folder)
     if inner != "." and any(seg.startswith(".") for seg in inner.split(os.sep)):  # "..": outside it
         raise PermissionError(f"{rel} is hidden, or outside the previewed page's folder")
@@ -213,11 +232,11 @@ def _files_by_name(checkout: str, fresh: bool) -> dict[str, list[str]]:
 
 
 def resolve_paths(project: Project, cwd: str | None, paths: list[str], fresh: bool = False) -> dict[str, dict[str, str] | None]:
-    """Which of ``paths``, as an agent working in ``cwd`` wrote them, are files of the project:
-    ``{path: {root, path} | None}``, the root one of ``project.roots()``. A path is taken relative to ``cwd``, or
-    absolute (``~/`` too) inside the project, or without a diff's ``a/`` / ``b/``; else as the end of a path
-    (``api.ts``, ``chat/ChatView.tsx``) when one file of the checkout, and only one, has it. Directories are not
-    files. Only whether they exist is told, nothing of what is in them."""
+    """Which of ``paths``, as an agent working in ``cwd`` wrote them, are files: ``{path: {root, path} | None}``, the
+    root one of ``project.roots()``, or "" for a file outside the project (an agent's report in /tmp: read-only),
+    its path then absolute. A path is taken relative to ``cwd``, or absolute (``~/`` too), or without a diff's
+    ``a/`` / ``b/``; else as the end of a path (``api.ts``, ``chat/ChatView.tsx``) when one file of the checkout,
+    and only one, has it. Directories are not files. Only whether they exist is told, nothing of what is in them."""
     roots = sorted(((os.path.realpath(r), r) for r in project.roots()), key=lambda x: len(x[0]), reverse=True)
 
     def owner(real: str) -> tuple[str, str] | None:  # the innermost root holding it: a worktree inside the project
@@ -225,8 +244,10 @@ def resolve_paths(project: Project, cwd: str | None, paths: list[str], fresh: bo
 
     def found(p: str) -> dict[str, str] | None:
         real = os.path.realpath(p)
+        if not os.path.isfile(real):
+            return None
         o = owner(real)
-        return {"root": o[1], "path": os.path.relpath(real, o[0])} if o and os.path.isfile(real) else None
+        return {"root": o[1], "path": os.path.relpath(real, o[0])} if o else {"root": "", "path": real}
 
     base = os.path.realpath(cwd) if cwd else ""
     home = owner(base) if base else None

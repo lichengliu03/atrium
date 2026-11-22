@@ -1,7 +1,8 @@
 // The files an agent names in what it writes, as links: a tap opens one in the Files panel, shown as itself when it
 // renders (Markdown, a page, a picture…), at the line when one is given (`api.ts:42`, `api.ts#L42`). A path in
 // backticks, a Markdown link's or one in the prose itself; only those the server finds a file for are linked
-// (fs.resolve_paths: relative to the agent's directory, or the end of one file's path in its checkout).
+// (fs.resolve_paths: relative to the agent's directory, or the end of one file's path in its checkout; a file outside
+// the project, such as a report in /tmp, opens read-only).
 import type { ReactNode } from "react";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import type { Components } from "react-markdown";
@@ -141,7 +142,7 @@ export const FILE_COMPONENTS: Components = {
 };
 
 // ---------------------------------------------------------------------------- which are files
-type Found = { root: string; path: string } | null;
+type Found = { root: string; path: string } | null; // root "": outside the project, path absolute
 /** what the server said, by `pid \n cwd \n path` (a key missing: not answered yet); an answer stays shown while it
  *  is asked again, so a link doesn't blink each time its file is saved */
 const useFound = create<{ found: Record<string, Found> }>(() => ({ found: {} }));
@@ -219,7 +220,7 @@ function changed(paths: string[]) {
   const names = new Set(paths.map(basename));
   for (const [key, hit] of Object.entries(useFound.getState().found)) {
     if (hit) {
-      if (abs.has(`${hit.root}/${hit.path}`)) renew(key);
+      if (abs.has(hit.root ? `${hit.root}/${hit.path}` : hit.path)) renew(key);
       continue;
     }
     const path = split(key).path.replace(/^(\.\/)+/, "");

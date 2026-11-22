@@ -964,7 +964,8 @@ async def file_site(pid: str, path: str, root: str | None = None):
 
 @app.post("/api/p/{pid}/file/resolve")
 async def resolve_paths(pid: str, body: dict[str, Any] = Body(...)):
-    """Which paths in an agent's reply are files of the project, for the chat to link them (fs.resolve_paths)."""
+    """Which paths in an agent's reply are files, of the project or (read-only) outside it, for the chat to link them
+    (fs.resolve_paths)."""
     paths = [str(p) for p in body.get("paths") or []]
     cwd = str(body["cwd"]) if body.get("cwd") else None
     return {"files": await asyncio.to_thread(fs.resolve_paths, P(pid), cwd, paths, bool(body.get("fresh")))}
@@ -1174,8 +1175,13 @@ async def list_terminals(pid: str):
 async def create_terminal(pid: str, body: dict[str, Any] = Body(default={})):
     """A shell in the project's directory or one of its worktrees (``root``), at the page's size."""
     p = P(pid)
+    root = _git_root(p, body.get("root"))
+    # a worktree removed after the page listed it: Atrium makes them in the project's folder (.atrium/worktrees), so its
+    # path still passes for the project's, and the shell would fail to start there with a bare ENOENT
+    if not os.path.isdir(root):
+        raise HTTPException(409, f"{root} doesn't exist any more")
     try:
-        t = await terminals.create(p.id, _git_root(p, body.get("root")), int(body.get("cols") or 80), int(body.get("rows") or 24))
+        t = await terminals.create(p.id, root, int(body.get("cols") or 80), int(body.get("rows") or 24))
     except TerminalError as e:
         raise HTTPException(400, str(e))
     return t.describe()

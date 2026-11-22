@@ -14,8 +14,8 @@ import { HIGHLIGHT, Spinner } from "./ui";
 export interface PreviewProps {
   kind: PreviewKind;
   pid: string;
-  root: string;
-  path: string; // relative to root
+  root: string; // "" outside the project
+  path: string; // relative to root; absolute outside the project
   content: string; // the buffer, unsaved edits included
   version: string | null; // changes when the file on disk does: a new URL for what is loaded from there
   site?: string | null; // html: where the saved page is served (fs.Sites); undefined while that is asked
@@ -80,7 +80,8 @@ const SAFE: Plugins = [rehypeRaw, [rehypeSanitize, schema]];
 const REMARK = [remarkGfm];
 const isUrl = (s: string) => /^([a-z][a-z\d+.-]*:|\/\/)/i.test(s);
 
-/** a path relative to the file's folder (or, from "/", to its checkout), as one relative to the checkout */
+/** a path relative to the file's folder (or, from "/", to its checkout), as one relative to the checkout; for a file
+ *  outside the project (its folder absolute), an absolute one, "/" being the file system's */
 function resolvePath(dir: string, href: string): string | null {
   const parts = href.startsWith("/") ? [] : dir.split("/").filter(Boolean);
   for (const raw of href.split("/")) {
@@ -94,7 +95,7 @@ function resolvePath(dir: string, href: string): string | null {
     if (seg !== "..") parts.push(seg);
     else if (!parts.pop()) return null;
   }
-  return parts.join("/");
+  return (dir.startsWith("/") ? "/" : "") + parts.join("/");
 }
 
 /** a #link: the heading with that id, or the element an id of the HTML got clobbered to (sanitize's prefix) */

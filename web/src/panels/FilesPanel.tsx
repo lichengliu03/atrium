@@ -23,7 +23,7 @@ interface OpenFile {
   sha: string | null;
   binary: boolean;
   diskChanged: boolean;
-  external?: boolean; // outside the project (a library the language server pointed at): read-only
+  external?: boolean; // outside the project (a library the language server pointed at, an agent's report in /tmp): read-only
   reveal?: Reveal;
   view?: "preview" | "source"; // a file that renders (Markdown, HTML, a CSV…): shown as itself, or as its text
 }
@@ -51,9 +51,10 @@ function viewFor(path: string, target?: FileTarget): OpenFile["view"] {
 }
 
 /** Where an HTML page is served for its preview (fs.Sites), so what it loads by a relative URL comes from beside it.
- *  undefined while that is asked; null when it can't be (outside the project, or a server from before previews). */
+ *  undefined while that is asked; null when it can't be (a folder the server won't serve, such as /tmp or home, a
+ *  library from the language server, or a server from before previews). */
 function useSiteUrl(pid: string, f: OpenFile | null): string | null | undefined {
-  const want = !!f && !f.external && f.view === "preview" && previewKind(f.path) === "html";
+  const want = !!f && f.view === "preview" && previewKind(f.path) === "html";
   const [site, setSite] = useState<{ key: string; url: string | null } | null>(null);
   const key = want ? `${f.root}::${f.path}` : "";
   useEffect(() => {
@@ -97,7 +98,7 @@ function EditorStatusLine({ path, language }: { path: string; language: string }
 
 export function FilesPanel() {
   const { project, fileRequest, fsVersion, fsPaths, toast } = useAppState("project", "fileRequest", "fsVersion", "fsPaths", "toast");
-  const roots = useMemo(() => project?.worktrees.length ? project.worktrees.map((w) => ({ path: w.path, label: w.main ? `${project.name} (${w.branch ?? "detached"})` : `⎇ ${w.branch ?? "detached"}` })) : project ? [{ path: project.path, label: project.name }] : [], [project]);
+  const roots = useMemo(() => project?.worktrees.length ? project.worktrees.filter((w) => !w.prunable).map((w) => ({ path: w.path, label: w.main ? `${project.name} (${w.branch ?? "detached"})` : `⎇ ${w.branch ?? "detached"}` })) : project ? [{ path: project.path, label: project.name }] : [], [project]);
   const [root, setRoot] = useState<string>(project?.path ?? "");
   const [hidden, setHidden] = useState(false);
   const [children, setChildren] = useState<Record<string, DirEntry[]>>({});
@@ -195,9 +196,18 @@ export function FilesPanel() {
       }
       try {
         const d = await api.file(pid, rel, rootPath);
-        const f: OpenFile = { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, reveal, view: d.binary ? undefined : viewFor(d.path, target) };
-        setOpen((cur) => [...cur, f]);
-        setActive(key);
+        // outside the project (the server says so): read-only, by its own path. Opened again, it is read again: the
+        // watcher doesn't look there, and an agent may have rewritten it since
+        const f: OpenFile = d.external
+          ? { key: `external::${d.abs}`, root: "", path: d.abs, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, external: true, reveal, view: d.binary ? undefined : viewFor(d.abs, target) }
+          : { key, root: rootPath, path: d.path, abs: d.abs, content: d.content ?? "", saved: d.content ?? "", sha: d.sha, binary: d.binary, diskChanged: false, reveal, view: d.binary ? undefined : viewFor(d.path, target) };
+        setOpen((cur) => {
+          const was = cur.find((x) => x.key === f.key);
+          if (!was) return [...cur, f];
+          // a file outside the project is read again (nothing typed in it to lose), in the view it was left in
+          return f.external ? cur.map((x) => (x === was ? { ...f, view: reveal ? f.view : was.view } : x)) : cur;
+        });
+        setActive(f.key);
       } catch (e: any) {
         toast(e.message, "error");
       }
@@ -227,6 +237,11 @@ export function FilesPanel() {
       if (owner) {
         r = owner.path;
         p = p.slice(owner.path.length + 1);
+      } else {
+        // outside the project (or in it by another name, /tmp for /private/tmp): the server finds it by its own path,
+        // whatever the root (an agent's cwd may be a worktree removed since), and the tree stays where it is
+        void openFile(project.path, p, fileRequest);
+        return;
       }
     } else if (fileRequest.root && fileRequest.root !== root) {
       r = fileRequest.root;
@@ -242,7 +257,7 @@ export function FilesPanel() {
   const previewing = media || cur?.view === "preview";
   const site = useSiteUrl(pid, cur);
   // to see it in a tab of its own (as saved): a page at its served URL, a PDF or a picture as itself
-  const newTab = !cur || cur.external || !previewing ? null : kind === "html" ? site : kind === "svg" || media ? api.rawFileUrl(pid, cur.path, cur.root, cur.sha) : null;
+  const newTab = !cur || !previewing ? null : kind === "html" ? site : kind === "svg" || media ? api.rawFileUrl(pid, cur.path, cur.root, cur.sha) : null;
   const setView = (f: OpenFile, view: OpenFile["view"]) => {
     setOpen((all) => all.map((x) => (x.key === f.key ? { ...x, view } : x)));
     const kind = previewKind(f.path);

@@ -10,17 +10,18 @@ const TerminalView = lazy(() => import("../terminal/TerminalView")); // xterm.js
 /** Shells on the server, one per tab (atrium/terminal.py): they keep running while the page is away, and every
  *  page of the project sees the same ones. `visible`: the panel is the workspace's open one. */
 export function TerminalPanel({ visible }: { visible: boolean }) {
-  const { project, terminalVersion, toast } = useAppState("project", "terminalVersion", "toast");
+  const { project, terminalVersion, toast, refreshProject } = useAppState("project", "terminalVersion", "toast", "refreshProject");
   const pid = project?.id ?? "";
   const [list, setList] = useState<TerminalInfo[] | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const [titles, setTitles] = useState<Record<string, string>>({}); // what the shell calls its window (OSC 0/2)
   const [creating, setCreating] = useState(false);
   const asked = useRef(0);
+  const recheckRoots = useCallback(() => void refreshProject().catch(() => undefined), [refreshProject]);
   const started = useRef(false); // the first time the panel shows, with no terminal yet, it opens one itself
-  // the project directory and its worktrees, labelled as in Files
+  // the project directory and its worktrees, labelled as in Files; not one whose folder is gone (git calls it prunable)
   const roots = useMemo(
-    () => project?.worktrees.length ? project.worktrees.map((w) => ({ path: w.path, label: w.main ? `${project.name} (${w.branch ?? "detached"})` : `⎇ ${w.branch ?? "detached"}` })) : project ? [{ path: project.path, label: project.name }] : [],
+    () => project?.worktrees.length ? project.worktrees.filter((w) => !w.prunable).map((w) => ({ path: w.path, label: w.main ? `${project.name} (${w.branch ?? "detached"})` : `⎇ ${w.branch ?? "detached"}` })) : project ? [{ path: project.path, label: project.name }] : [],
     [project],
   );
 
@@ -57,11 +58,12 @@ export function TerminalPanel({ visible }: { visible: boolean }) {
         setActive(t.id);
       } catch (e: any) {
         toast(e.message, "error");
+        recheckRoots(); // a worktree listed here that has gone since: the menu drops it
       } finally {
         setCreating(false);
       }
     },
-    [pid, toast],
+    [pid, toast, recheckRoots],
   );
 
   useEffect(() => {
@@ -120,7 +122,8 @@ export function TerminalPanel({ visible }: { visible: boolean }) {
               align="right"
               within=".workspace"
               trigger={(open, toggle) => (
-                <button className={clsx("icon-btn term-new", open && "active")} disabled={creating} title="New terminal in…" aria-label="New terminal" onClick={toggle}>
+                // the worktrees as they are now: one may have gone since the project was loaded
+                <button className={clsx("icon-btn term-new", open && "active")} disabled={creating} title="New terminal in…" aria-label="New terminal" onClick={() => (open || recheckRoots(), toggle())}>
                   <Plus size={15} />
                   <ChevronDown size={11} />
                 </button>

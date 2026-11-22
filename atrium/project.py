@@ -193,16 +193,23 @@ class Project:
                 seen.pop(p, None)
             _write_json(self.state_dir / "worktrees.json", seen)
 
-    def resolve(self, rel: str, root: str | None = None) -> Path:
-        """Resolve a path inside one of the project's roots; refuse anything outside."""
+    def locate(self, rel: str, root: str | None = None) -> tuple[Path, str | None]:
+        """``rel`` taken from ``root`` (one of the project's roots, or a directory in one), and the innermost root
+        holding it: None when it is outside the project."""
         base = os.path.realpath(root or self.path)
         roots = self.roots()
         if base not in roots and not any(base.startswith(r + os.sep) for r in roots):
             raise PermissionError(f"{base} is not part of this project")
         target = os.path.realpath(os.path.join(base, rel)) if not os.path.isabs(rel) else os.path.realpath(rel)
-        if not any(target == r or target.startswith(r + os.sep) for r in roots):
+        inner = max((r for r in roots if target == r or target.startswith(r + os.sep)), key=len, default=None)
+        return Path(target), inner
+
+    def resolve(self, rel: str, root: str | None = None) -> Path:
+        """Resolve a path inside one of the project's roots; refuse anything outside."""
+        target, inner = self.locate(rel, root)
+        if inner is None:
             raise PermissionError(f"{rel} is outside the project")
-        return Path(target)
+        return target
 
     def describe(self) -> dict[str, Any]:
         return {"id": self.id, "path": self.path, "name": self.name, "chat": self.chat, "is_git": gitops.is_repo(self.path)}
