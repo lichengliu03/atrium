@@ -99,6 +99,7 @@ export interface Meta {
   auth: boolean; // the login page is on (off: `atrium --no-auth`)
   // model calls recorded (capture.enabled; its proxy started); megabytes stored, and of them kept apart from capture.max_mb
   capture: { enabled: boolean; running: boolean; mb: number; kept_mb: number };
+  features?: string[]; // what an older server didn't do: "quiet_subscriptions" (ws.ts)
 }
 
 // ---- model calls the capture recorded (capture.py) ----

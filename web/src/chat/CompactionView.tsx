@@ -7,7 +7,8 @@ import { useApp } from "../store";
 import { displayName } from "../util";
 import { Spinner } from "../components/ui";
 import { compactionLabel } from "../components/Compactions";
-import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
+import { Transcript, toBlocks } from "./ChatView";
+import { applyAll, empty } from "./chatStore";
 import { ScrollAids } from "./ScrollAids";
 
 export function CompactionView({ pid, sid, cid, cwd }: { pid: string; sid: string; cid: string; cwd: string }) {

@@ -308,7 +308,9 @@ class SessionManager:
         h.project.set_session_meta(h.sid, snapshots=snaps[-MAX_SNAPSHOTS:])
 
     # ---- discovery ---------------------------------------------------------
-    async def summaries(self, project: Project, max_age: float = 3.0) -> list[SessionSummary]:
+    async def summaries(self, project: Project, max_age: float = 3.0, stale_ok: bool = False) -> list[SessionSummary]:
+        """``stale_ok``: what was found last time, older or not, while it is looked for again (a chat opening a session
+        it knows: listing every harness's sessions takes a tenth of a second, Codex's most of it)."""
         cached = self._summary_cache.get(project.id)
         if cached and time.time() - cached[0] < max_age:
             return cached[1]
@@ -316,7 +318,10 @@ class SessionManager:
         if task is None:
             task = asyncio.create_task(self._discover(project))
             self._summary_inflight[project.id] = task
-            task.add_done_callback(lambda _t: self._summary_inflight.pop(project.id, None))
+            # (its error, if nobody waits for it, is the next caller's)
+            task.add_done_callback(lambda t: (self._summary_inflight.pop(project.id, None), t.cancelled() or t.exception()))
+        if cached and stale_ok:
+            return cached[1]
         return await asyncio.shield(task)
 
     async def _discover(self, project: Project) -> list[SessionSummary]:
@@ -347,7 +352,7 @@ class SessionManager:
         self._summary_cache.pop(project.id, None)
 
     async def find_summary(self, project: Project, sid: str) -> SessionSummary | None:
-        for s in await self.summaries(project):
+        for s in await self.summaries(project, stale_ok=True):  # where it is and which harness: as when it was found
             if s.id == sid:
                 return s
         for s in await self.summaries(project, max_age=0):
@@ -372,7 +377,7 @@ class SessionManager:
         ``git worktree list`` (directories and branches come from the worktrees seen before), no subagents or
         compactions, and the harnesses' session lists may be 10 s old. ``only``: that session's row alone (a chat
         opening it), not hundreds made to keep one."""
-        summaries = await self.summaries(project, max_age=3.0 if details else 10.0)
+        summaries = await self.summaries(project, max_age=3.0 if details else 10.0, stale_ok=only is not None)
         wts = await asyncio.to_thread(project.worktrees_sync) if details else []
         known = project.note_worktrees(wts)  # without wts: only reads what was seen
         meta = project.sessions_meta()

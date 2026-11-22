@@ -213,7 +213,8 @@ def _merge_extra_models(d: dict[str, Any]) -> None:
 async def meta():
     harnesses = await asyncio.gather(*(_catalog(h) for h in all_harnesses()))
     return {"version": __version__, "harnesses": harnesses, "settings": config.public_settings(), "lsp": await asyncio.to_thread(lsp.available),
-            "terminal": terminals.available(), "auth": auth.enabled, "capture": {"enabled": capture.enabled, "running": capture.running, **capture.usage()}}
+            "terminal": terminals.available(), "auth": auth.enabled, "capture": {"enabled": capture.enabled, "running": capture.running, **capture.usage()},
+            "features": ["quiet_subscriptions"]}  # what a page can count on that an older server didn't do
 
 
 @app.get("/api/settings")
@@ -1247,7 +1248,7 @@ async def ws(socket: WebSocket):
             msg = await socket.receive_json()
             op, topic = msg.get("op"), msg.get("topic")
             if op == "sub" and topic:
-                hub.subscribe(sub, topic)
+                hub.subscribe(sub, topic, quiet=bool(msg.get("quiet")))
             elif op == "unsub" and topic:
                 hub.unsubscribe(sub, topic)
             elif op == "presence":

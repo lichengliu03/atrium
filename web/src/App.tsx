@@ -1,11 +1,11 @@
 import type { JSX, ReactNode } from "react";
-import { memo, useEffect, useState } from "react";
+import { Activity, memo, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, ArrowLeft, ArrowLeftRight, ChevronRight, FileDiff, Files, GitBranch, GitFork, LayoutDashboard, MessageSquare, PanelLeftOpen, PanelRightClose, Plug, SquareTerminal, Unplug } from "lucide-react";
 import { api, loginUrl, SessionRow } from "./api";
 import { Panel, useApp, useAppState } from "./store";
 import { clsx, displayName, isMac, tidyNote } from "./util";
-import { useLayout } from "./layout";
+import { useCompact, useLayout } from "./layout";
 import { Rail, RailToggle, liveLabel, statusClass } from "./components/Rail";
 import { NewAgent } from "./components/NewAgent";
 import { HomePage } from "./components/HomePage";
@@ -14,6 +14,7 @@ import { ForkDialog } from "./components/ForkDialog";
 import { useFullscreenElement } from "./components/ui";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatView } from "./chat/ChatView";
+import { keepChats } from "./chat/chatStore";
 import { SubagentView } from "./chat/SubagentView";
 import { CompactionView } from "./chat/CompactionView";
 import { SUBAGENT_STATUS, SubagentAvatar, subagentLabel } from "./components/Subagents";
@@ -268,9 +269,23 @@ const Workspace = memo(function Workspace() {
   );
 });
 
+/** How many agents' chats stay mounted, hidden, while others are open (on a phone, and elsewhere): going back to one only
+ *  shows it again, as it was left (its conversation is kept up with meanwhile: chat/chatStore). */
+const KEEP_CHATS = { compact: 3, wide: 5 };
+
 /** The selected agent's conversation, or the new-agent composer — right of the workspace. */
 const ChatColumn = memo(function ChatColumn() {
   const { project, sessionId, subagentId, compactionId, sessions, chatWidth, setChatWidth, chatFloor } = useAppState("project", "sessionId", "subagentId", "compactionId", "sessions", "chatWidth", "setChatWidth", "chatFloor");
+  // the agents' chats opened lately, the last first (an agent deleted or archived since goes)
+  const keepN = useCompact() ? KEEP_CHATS.compact : KEEP_CHATS.wide;
+  const pid = project?.id ?? null;
+  const [kept, setKept] = useState<{ pid: string | null; sids: string[] }>({ pid, sids: [] });
+  let sids = kept.pid === pid ? kept.sids : [];
+  if (sessionId && sids[0] !== sessionId) sids = [sessionId, ...sids.filter((x) => x !== sessionId)];
+  sids = sids.filter((x) => x === sessionId || sessions.some((s) => s.id === x)).slice(0, keepN);
+  if (kept.pid !== pid || sids.join() !== kept.sids.join()) setKept({ pid, sids });
+  const keptKey = sids.join();
+  useEffect(() => keepChats(pid ?? "", keptKey ? keptKey.split(",") : []), [pid, keptKey]);
   const wide = useLayout() === "wide"; // elsewhere the screen (and its fold) sets the width, a finger can't hold the splitter
   // never so narrow that the composer's bar breaks onto a second line, unless the workspace would get less than its
   // MIN_WORKSPACE for it: the workspace comes first, and in a window that has no room for both the chips wrap (styles.css)
@@ -328,10 +343,7 @@ const ChatColumn = memo(function ChatColumn() {
           <CompactionView key={`${sessionId}/${compactionId}`} pid={project.id} sid={sessionId} cid={compactionId} cwd={current?.cwd ?? project.path} />
         </>
       ) : sessionId ? (
-        <>
-          <SessionHeader />
-          <ChatView key={sessionId} pid={project.id} sid={sessionId} cwd={current?.cwd ?? project.path} forkable editable />
-        </>
+        <SessionHeader />
       ) : (
         <>
           <div className="topbar">
@@ -344,6 +356,11 @@ const ChatColumn = memo(function ChatColumn() {
           <NewAgent />
         </>
       )}
+      {sids.map((sid) => (
+        <Activity key={sid} mode={sid === sessionId && !subagentId && !compactionId ? "visible" : "hidden"}>
+          <ChatView pid={project.id} sid={sid} cwd={sessions.find((s) => s.id === sid)?.cwd ?? project.path} forkable editable />
+        </Activity>
+      ))}
     </section>
   );
 });

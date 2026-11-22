@@ -6,7 +6,8 @@ import { socket } from "../ws";
 import { useApp } from "../store";
 import { displayName, throttle } from "../util";
 import { Spinner } from "../components/ui";
-import { Transcript, applyAll, empty, toBlocks } from "./ChatView";
+import { Transcript, toBlocks } from "./ChatView";
+import { applyAll, empty } from "./chatStore";
 import { ScrollAids } from "./ScrollAids";
 
 export function SubagentView({ pid, sid, aid, cwd }: { pid: string; sid: string; aid: string; cwd: string }) {

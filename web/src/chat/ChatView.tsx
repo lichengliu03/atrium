@@ -1,8 +1,7 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ArrowUpRight, Brain, ChevronRight, ChevronUp, FoldVertical, GitFork, Goal as GoalIcon, Info, Pencil, Sparkle, Square } from "lucide-react";
-import { api, EditAt, ForkAt, Goal, Item, LiveState, MoveWorkspace, SessionRow, SessionSettings, Upload } from "../api";
-import { socket } from "../ws";
+import { api, EditAt, ForkAt, Item, MoveWorkspace, SessionSettings, Upload } from "../api";
 import { useApp } from "../store";
 import { EMPTY_REPLY, Workspace, useDrafts } from "../drafts";
 import { clsx, fmtClock, fmtDuration, samePoint } from "../util";
@@ -22,94 +21,13 @@ import { MessageEditor } from "./MessageEditor";
 import { ScrollAids } from "./ScrollAids";
 import { GoalBar } from "./GoalBar";
 import { Outgoing, backToComposer, newMessageId, post, sentAttachments, useOutbox, useOutgoing } from "./outbox";
+import { ChatState, updateChat, useChat } from "./chatStore";
 
 type UserItem = Extract<Item, { kind: "user" }>;
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
 type PermItem = Extract<Item, { kind: "permission" }>;
 type SystemItem = Extract<Item, { kind: "system" }>;
-
-export interface ChatState {
-  items: Item[];
-  seen: Set<string>;
-  results: Record<string, ResultItem>;
-  pending: Record<string, PermItem>;
-  resolved: Set<string>;
-  streaming: string;
-  state: LiveState | null;
-  mode: string | null;
-  model: string | null;
-  effort: string | null; // the thread's effort when nothing overrides it, if the harness says (Codex)
-  usage: { used: number | null; max: number | null } | null;
-  goal: Goal | null; // the thread's goal (Codex)
-}
-
-export const empty = (): ChatState => ({
-  items: [], seen: new Set(), results: {}, pending: {}, resolved: new Set(), streaming: "", state: null, mode: null, model: null, effort: null, usage: null,
-  goal: null,
-});
-
-/** The chat with `its` applied, in order. What they change is copied once, not once per item: a long conversation's
- *  snapshot, a frame's worth of live items. */
-export function applyAll(st: ChatState, its: Item[]): ChatState {
-  const next: ChatState = { ...st };
-  let items: Item[] | null = null, seen: Set<string> | null = null, resolved: Set<string> | null = null;
-  let results: ChatState["results"] | null = null, pending: ChatState["pending"] | null = null;
-  let changed = false; // an item seen before changes nothing: the same state, and no render
-  for (const it of its) {
-    switch (it.kind) {
-      case "delta":
-        next.streaming += it.text;
-        break;
-      case "state":
-        next.state = it.state;
-        if (it.state !== "running") next.streaming = "";
-        break;
-      case "usage":
-        next.usage = { used: it.used, max: it.max };
-        break;
-      case "goal":
-        next.goal = it.goal;
-        break;
-      case "tool_result":
-        (results ??= { ...st.results })[it.id] = it;
-        break;
-      case "permission":
-        if ((resolved ?? st.resolved).has(it.id)) continue;
-        (pending ??= { ...st.pending })[it.id] = it;
-        break;
-      case "permission_resolved":
-        delete (pending ??= { ...st.pending })[it.id];
-        (resolved ??= new Set(st.resolved)).add(it.id);
-        break;
-      default: {
-        if ((seen ?? st.seen).has(it.id)) {
-          // harnesses may re-send a tool call once its input is final (upsert)
-          const i = it.kind === "tool" ? (items ?? st.items).findIndex((x) => x.kind === "tool" && x.id === it.id) : -1;
-          if (i < 0) continue;
-          (items ??= [...st.items])[i] = it;
-          break;
-        }
-        (seen ??= new Set(st.seen)).add(it.id);
-        (items ??= [...st.items]).push(it);
-        if (it.kind === "text") next.streaming = "";
-        if (it.kind === "system" && it.subtype === "init") {
-          next.mode = it.permission_mode ?? next.mode;
-          next.model = it.model ?? next.model;
-          next.effort = it.effort ?? next.effort;
-        }
-      }
-    }
-    changed = true;
-  }
-  if (!changed) return st;
-  if (items) next.items = items;
-  if (seen) next.seen = seen;
-  if (results) next.results = results;
-  if (pending) next.pending = pending;
-  if (resolved) next.resolved = resolved;
-  return next;
-}
 
 export type Block =
   | { type: "tools"; key: string; tools: ToolItem[] }
@@ -572,13 +490,14 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const setForkRequest = useApp((s) => s.setForkRequest);
   const refreshSessions = useApp((s) => s.refreshSessions);
   const refreshProject = useApp((s) => s.refreshProject);
-  const [st, setSt] = useState<ChatState>(empty);
+  // the conversation, kept while other agents are opened (./chatStore): back to it, it shows at once
+  const { st, row: loadedRow, settings, loading } = useChat(pid, sid);
+  const setSt = (fn: (s: ChatState) => ChatState) => updateChat(pid, sid, (c) => ({ ...c, st: fn(c.st) }));
+  const setSettings = (fn: (s: SessionSettings) => SessionSettings) => updateChat(pid, sid, (c) => ({ ...c, settings: fn(c.settings) }));
   // the session's row: the store's, else the one loaded with the conversation (the store leaves archived ones out)
   const listed = useApp((s) => s.sessions.find((x) => x.id === sid));
-  const [loadedRow, setLoadedRow] = useState<SessionRow | null>(null);
   const row = listed ?? loadedRow;
   const harnessId = row?.harness ?? null;
-  const [settings, setSettings] = useState<SessionSettings>({ model: "", effort: "", mode: "" });
   // what's typed here is the session's draft, kept outside this component (../drafts)
   const draft = useDrafts((s) => s.bySession[sid]) ?? EMPTY_REPLY;
   const updateReply = useDrafts((s) => s.updateReply);
@@ -589,13 +508,10 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     [sid, updateReply],
   );
   const att = useAttachments([draft.attachments, setAttachments]);
-  const [loading, setLoading] = useState(true);
   // where the agent carries on once its directory is gone (a removed worktree): picked here, applied on send
   const [ws, setWs] = useState<Workspace | null>(null);
-  useEffect(() => setWs(null), [sid]);
   // another harness to continue in, while its handoff is reviewed
   const [handoffTarget, setHandoffTarget] = useState<string | null>(null);
-  useEffect(() => setHandoffTarget(null), [sid]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -606,83 +522,16 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     return () => void (here.current = null);
   }, [sid]);
 
-  // load snapshot + live stream (buffer live items until the snapshot lands)
-  useEffect(() => {
-    let alive = true;
-    let ready = false;
-    const buffer: Item[] = [];
-    // live items go in once a frame, together: a burst of them, or a reply streamed token by token, renders once
-    let queued: Item[] = [];
-    let frame = 0;
-    const flush = () => {
-      cancelAnimationFrame(frame);
-      frame = 0;
-      const its = queued;
-      queued = [];
-      setSt((s) => applyAll(s, its));
-    };
-    const queue = (it: Item) => {
-      queued.push(it);
-      if (queued.length >= 1000) flush(); // a hidden page gets no frames until it is shown
-      else frame ||= requestAnimationFrame(flush);
-    };
-    setSt(empty());
-    setLoadedRow(null);
-    setLoading(true);
+  // another session in this chat (the Review drawer's): its end first, as a chat opening
+  const shownSid = useRef(sid);
+  if (shownSid.current !== sid) {
+    shownSid.current = sid;
     stick.current = true;
-    const unsub = socket.subscribe(`session:${sid}`, (msg) => {
-      if (msg.type === "settings") setSettings(msg.settings);
-      if (msg.type === "reload") {
-        // a message was changed: the conversation is the one up to it, from here on (new items wait for it)
-        ready = false;
-        void load();
-      }
-      if (msg.type !== "item") return;
-      if (!ready) buffer.push(msg.item);
-      else queue(msg.item);
-    });
-    const load = () => {
-      const asked = performance.now();
-      return api
-        .session(pid, sid)
-        .then((snap) => {
-          if (!alive) return;
-          // what was still queued came before this was asked for: the snapshot has it
-          cancelAnimationFrame(frame);
-          frame = 0;
-          queued = [];
-          const s = applyAll(empty(), [...snap.items, ...buffer]);
-          // drop permissions the server no longer considers pending
-          const pend = new Set(snap.pending);
-          s.pending = Object.fromEntries(Object.entries(s.pending).filter(([k]) => pend.has(k) || buffer.some((b) => b.kind === "permission" && b.id === k)));
-          s.state = snap.live ? snap.state : null;
-          if (!s.model && snap.settings?.model) s.model = snap.settings.model;
-          setSt(s);
-          setLoadedRow(snap.session);
-          if (snap.settings) setSettings(snap.settings);
-          useOutbox.getState().settle(sid, s.seen, asked); // the messages on their way it has
-          ready = true;
-          buffer.length = 0;
-        })
-        .catch((e) => toast(String(e.message || e), "error"))
-        .finally(() => alive && setLoading(false));
-    };
-    void load();
-    const offRe = socket.onReconnect(() => {
-      ready = false;
-      void load();
-    });
-    return () => {
-      alive = false;
-      cancelAnimationFrame(frame);
-      unsub();
-      offRe();
-    };
-  }, [pid, sid, toast]);
+  }
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (el?.clientHeight) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; // (none: hidden)
   };
 
   // autosize composer
@@ -725,6 +574,14 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     const el = scrollRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [items.length, shown.length, streaming, pendingList.length, loading]);
+  // kept hidden while another agent's chat is open (App's ChatColumn), then shown again: where it was read to (a hidden
+  // box loses its scroll position)
+  const readTo = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && !stick.current && readTo.current !== null) el.scrollTop = readTo.current;
+    return () => void (readTo.current = el ? el.scrollTop : null);
+  }, []);
 
   const running = st.state === "running" || st.state === "starting" || st.state === "waiting";
   const blocks = useMemo(() => toBlocks(items), [items]);
@@ -744,7 +601,16 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     setEditing(id);
     setEditDraft(null);
   }, []);
-  useEffect(() => openEditor(null), [sid, openEditor]);
+  // another session in this chat (the Review drawer's): nothing picked or being changed there. Not when it is only shown
+  // again (a chat kept hidden: App's ChatColumn), which finds it as it was left
+  const pickedFor = useRef(sid);
+  useEffect(() => {
+    if (pickedFor.current === sid) return;
+    pickedFor.current = sid;
+    setWs(null);
+    setHandoffTarget(null);
+    openEditor(null);
+  }, [sid, openEditor]);
   // for a change that failed: whether its message is still there to change again, and nothing else is being changed
   const now = useRef({ items: st.items, editing });
   useLayoutEffect(() => void (now.current = { items: st.items, editing }));

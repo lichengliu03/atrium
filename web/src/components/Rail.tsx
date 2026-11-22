@@ -19,6 +19,7 @@ import { realHover, useCompact, useLayout } from "../layout";
 import { holdTouch } from "../tips";
 import { Popover, useInterval, useTick, useTouchDismiss } from "./ui";
 import { RailSubagents } from "./Subagents";
+import { prefetchChat } from "../chat/chatStore";
 
 export function statusClass(s: Pick<SessionRow, "live" | "pending" | "status">): string {
   if (s.live === "waiting" || s.pending) return "waiting";
@@ -242,7 +243,12 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
   const archived = workers.filter((s) => s.archived);
   const item = (s: SessionRow) => (
     <div key={s.id} className={clsx("sb-row", s.id === sessionId && "active")}>
-      <button className={clsx("sb-item", s.id === sessionId && "active", s.archived && "archived")} onClick={() => (selectSession(s.id), onClose())} title={s.cwd}>
+      <button
+        className={clsx("sb-item", s.id === sessionId && "active", s.archived && "archived")}
+        onPointerDown={() => project && prefetchChat(project.id, s.id)} // its conversation on its way before the click
+        onClick={() => (selectSession(s.id), onClose())}
+        title={s.cwd}
+      >
         <span className="fly-av">
           <AgentAvatar s={s} glyph={glyphs.get(s.id)} size={26} />
           {statusClass(s) && <span className={clsx("st dot", statusClass(s))} />}
@@ -414,6 +420,7 @@ export const Rail = memo(function Rail() {
           className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
           data-needs-you={sc === "waiting" || undefined}
           onClick={click(() => pickAgent(s, kids))}
+          onPointerDownCapture={() => project && prefetchChat(project.id, s.id)} // its conversation on its way before the click
           aria-expanded={kids ? open : undefined}
           {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
         >

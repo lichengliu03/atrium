@@ -1,6 +1,7 @@
 // Single multiplexed websocket with topic subscriptions and auto-reconnect.
 // Also reports whether the page is active (visible and focused): the server skips desktop
-// notifications for sessions whose chat is open in an active page.
+// notifications for sessions whose chat is open in an active page. A quiet subscription (a chat kept up with, not
+// shown: chatStore) doesn't count as open.
 
 import { api } from "./api";
 
@@ -10,7 +11,7 @@ const pageActive = () => document.visibilityState === "visible" && document.hasF
 
 class Socket {
   private ws: WebSocket | null = null;
-  private handlers = new Map<string, Set<Handler>>();
+  private handlers = new Map<string, Map<Handler, boolean>>(); // topic -> its handlers, each quiet or not
   private backoff = 500;
   private reconnectListeners = new Set<() => void>();
   private everConnected = false;
@@ -42,7 +43,7 @@ class Socket {
       opened = true;
       this.connected = true;
       this.backoff = 500;
-      for (const topic of this.handlers.keys()) ws.send(JSON.stringify({ op: "sub", topic }));
+      for (const topic of this.handlers.keys()) this.send(topic);
       ws.send(JSON.stringify({ op: "presence", active: this.active, page: this.page }));
       if (this.everConnected) this.reconnectListeners.forEach((f) => f());
       this.everConnected = true;
@@ -54,7 +55,7 @@ class Socket {
       } catch {
         return;
       }
-      this.handlers.get(msg.topic)?.forEach((h) => h(msg));
+      for (const h of this.handlers.get(msg.topic)?.keys() ?? []) h(msg);
     };
     ws.onclose = () => {
       this.connected = false;
@@ -65,23 +66,40 @@ class Socket {
     };
   }
 
-  subscribe(topic: string, handler: Handler): () => void {
-    let set = this.handlers.get(topic);
-    if (!set) {
-      set = new Set();
-      this.handlers.set(topic, set);
-      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: "sub", topic }));
-    }
-    set.add(handler);
+  /** A topic is quiet while all its handlers are. */
+  private quiet(topic: string): boolean {
+    return [...(this.handlers.get(topic)?.values() ?? [])].every(Boolean);
+  }
+
+  private send(topic: string) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: "sub", topic, ...(this.quiet(topic) && { quiet: true }) }));
+  }
+
+  subscribe(topic: string, handler: Handler, quiet = false): () => void {
+    const hs = this.handlers.get(topic);
+    const was = hs ? this.quiet(topic) : null;
+    if (!hs) this.handlers.set(topic, new Map([[handler, quiet]]));
+    else hs.set(handler, quiet);
+    if (was !== this.quiet(topic)) this.send(topic);
     return () => {
       const s = this.handlers.get(topic);
-      if (!s) return;
+      if (!s?.has(handler)) return;
+      const before = this.quiet(topic);
       s.delete(handler);
       if (s.size === 0) {
         this.handlers.delete(topic);
         if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: "unsub", topic }));
-      }
+      } else if (this.quiet(topic) !== before) this.send(topic);
     };
+  }
+
+  /** Makes `handler`'s subscription to `topic` quiet, or not any more. */
+  setQuiet(topic: string, handler: Handler, quiet: boolean) {
+    const hs = this.handlers.get(topic);
+    if (!hs?.has(handler) || hs.get(handler) === quiet) return;
+    const was = this.quiet(topic);
+    hs.set(handler, quiet);
+    if (this.quiet(topic) !== was) this.send(topic);
   }
 
   onReconnect(f: () => void): () => void {
