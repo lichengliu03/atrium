@@ -71,6 +71,7 @@ class LiveHandle:
     last_activity: float = field(default_factory=time.time)
     pending: dict[str, Item] = field(default_factory=dict)
     compacted: int = 0  # where the conversation since its last compaction starts in ``items`` (``current``)
+    streaming: str = ""  # the reply being streamed (its deltas so far, as the chat adds them up), for a chat shown midway
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)  # subagents seen on the stream, by spawning tool call
     title_synced: bool = False
     released: bool = False  # stopped because its directory went away
@@ -211,6 +212,10 @@ class SessionManager:
             if kind == "task":
                 self._track_task(h, item)
                 return
+            if kind == "delta":
+                h.streaming += item.get("text") or ""
+            elif kind == "text" or kind == "state" and item.get("state") != "running":
+                h.streaming = ""
             if kind not in TRANSIENT:
                 if "ts" not in item:  # when it came (a tool call sent again keeps its first time)
                     pos = h.index.get(item.get("id") or "")
@@ -905,6 +910,11 @@ class SessionManager:
     def handle(self, sid: str) -> LiveHandle | None:
         h = self.live.get(sid)
         return h if h and h.alive else None
+
+    def streaming(self, sid: str) -> str:
+        """The reply ``sid``'s agent is streaming, as far as it got."""
+        h = self.handle(sid)
+        return h.streaming if h else ""
 
     async def interrupt(self, sid: str) -> None:
         h = self.handle(sid)

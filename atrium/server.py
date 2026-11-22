@@ -27,7 +27,7 @@ from .auth import router as auth_router
 from .board import pages as board_pages
 from .capture import capture, unwrap_inherited
 from .config import CHATS_DIR, UPLOADS_DIR, config
-from .events import Subscriber, hub
+from .events import LOST, Subscriber, hub
 from .gitagent import set_view
 from .harness import all_harnesses, get_harness
 from .project import Project, ProjectNotFound, projects
@@ -1240,6 +1240,9 @@ async def ws(socket: WebSocket):
     async def pump() -> None:
         while True:
             msg = await sub.queue.get()
+            if msg is LOST:  # it fell behind and events went past it: it reconnects and loads anew (ws.ts)
+                await socket.close(code=4008)
+                return
             await socket.send_json(msg)
 
     sender = asyncio.create_task(pump())
@@ -1248,7 +1251,12 @@ async def ws(socket: WebSocket):
             msg = await socket.receive_json()
             op, topic = msg.get("op"), msg.get("topic")
             if op == "sub" and topic:
-                hub.subscribe(sub, topic, quiet=bool(msg.get("quiet")))
+                shown = topic in sub.topics and topic not in sub.quiet
+                quiet = bool(msg.get("quiet"))
+                hub.subscribe(sub, topic, quiet=quiet)
+                part = sessions.streaming(topic.removeprefix("session:")) if not quiet and not shown and topic.startswith("session:") else ""
+                if part:  # a chat shown (again): the reply streamed so far, which a quiet subscription isn't sent
+                    hub.send(sub, {"topic": topic, "ts": time.time(), "type": "item", "item": {"kind": "delta", "text": part, "replay": True}})
             elif op == "unsub" and topic:
                 hub.unsubscribe(sub, topic)
             elif op == "presence":

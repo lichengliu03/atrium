@@ -349,7 +349,7 @@ export type Item = (
       agent_id?: string | null;
     }
   | { kind: "error"; id: string; text: string }
-  | { kind: "delta"; text: string }
+  | { kind: "delta"; text: string; replay?: boolean } // replay: the reply so far, for a chat shown midway (it replaces)
   | { kind: "state"; state: LiveState }
   | { kind: "usage"; id: string; used: number | null; max: number | null } // context window gauge, latest wins
   | { kind: "goal"; id: string; goal: Goal | null } // the thread's goal (Codex's /goal), latest wins

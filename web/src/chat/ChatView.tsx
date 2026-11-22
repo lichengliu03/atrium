@@ -20,7 +20,7 @@ import { useVoiceInput } from "./Voice";
 import { MessageEditor } from "./MessageEditor";
 import { ScrollAids } from "./ScrollAids";
 import { GoalBar } from "./GoalBar";
-import { Outgoing, backToComposer, newMessageId, post, sentAttachments, useOutbox, useOutgoing } from "./outbox";
+import { Outgoing, newMessageId, post, sentAttachments, useOutbox, useOutgoing } from "./outbox";
 import { ChatState, updateChat, useChat } from "./chatStore";
 
 type UserItem = Extract<Item, { kind: "user" }>;
@@ -619,19 +619,17 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
       stick.current = true;
       openEditor(null);
       const id = newMessageId();
-      post(
-        sid,
-        { id, text, uploads, edit: it.id },
-        () => api.editMessage(pid, sid, at, text, uploads.map((u) => u.id), id),
-        (e, later) => {
-          toast(errorText(e), "error");
-          if (here.current === sid && !now.current.editing && now.current.items.some((x) => "id" in x && x.id === it.id)) {
-            setEditing(it.id);
-            setEditDraft({ text, uploads });
-            backToComposer(sid, later);
-          } else backToComposer(sid, [{ text, uploads }, ...later]);
+      post(sid, { id, text, uploads, edit: it.id }, () => api.editMessage(pid, sid, at, text, uploads.map((u) => u.id), id), {
+        error: (e) => toast(errorText(e), "error"),
+        // its editor again, if its message is still there and nothing else is being changed (else the reply box)
+        back: () => {
+          if (here.current !== sid || now.current.editing || !now.current.items.some((x) => "id" in x && x.id === it.id)) return false;
+          now.current.editing = it.id; // (another one coming back with it finds this one open)
+          setEditing(it.id);
+          setEditDraft({ text, uploads });
+          return true;
         },
-      );
+      });
     },
     [pid, sid, toast, openEditor],
   );
@@ -657,7 +655,6 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const placed = !gone || moving || (!!moveTo && (moveTo.kind !== "new" || !!moveTo.branch)); // a removed worktree: somewhere picked to go on
   const handoffBlocked = running || outgoing.length > 0 || loading || !!editing || att.uploading || gone || !!row?.pending;
   const target = meta?.harnesses.find((h) => h.id === handoffTarget);
-  const canSend = !handoffTarget && (!!text.trim() || att.ids.length > 0) && !att.uploading && placed;
   // a new worktree for an agent that lost its own starts out on that worktree's branch name
   const pickWs = (w: Workspace) => setWs(w.kind === "new" && !w.branch && row?.worktree && row.branch ? { ...w, branch: row.branch } : w);
 
@@ -669,9 +666,10 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
     if (!(t || att.ids.length) || att.uploading || handoffTarget) return;
     if (forkable && atrium.run(t)) return setText(""); // an agent's chat (not the Git agent's)
     if (!placed) return;
+    if (held(t)) return void (override !== undefined && setText(override)); // (a command picked in the menu waits there)
     const id = newMessageId();
     const uploads = att.items.flatMap((x) => (x.upload ? [x.upload] : []));
-    const command = /^\/\S/.test(t) && !!commands?.some((c) => c.prefix === "/" && [c.name, ...c.aliases].includes(t.slice(1).split(/\s/)[0]!));
+    const command = isCommand(t);
     const move = moveTo;
     stick.current = true;
     setText("");
@@ -688,10 +686,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
         }
         return api.send(pid, sid, t, uploads.map((u) => u.id), id);
       },
-      (e, later) => {
-        toast(errorText(e), "error");
-        backToComposer(sid, [{ text: t, uploads }, ...later]);
-      },
+      { error: (e) => toast(errorText(e), "error") },
     );
     if (!matchMedia("(pointer: coarse)").matches) inputRef.current?.focus(); // a finger that tapped send put the keyboard away
   };
@@ -751,6 +746,13 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
   const skills = harness?.id === "codex";
   const harnessCommands = useSlashCommands(pid, { sid }, text.startsWith("/") || (skills && text.includes("$")));
   const commands = useMemo(() => mergeCommands(forkable ? atrium.commands : [], harnessCommands), [forkable, atrium.commands, harnessCommands]);
+  // one of the harness's slash commands (as far as the chat knows them)
+  const isCommand = (t: string) => /^\/\S/.test(t) && !!commands?.some((c) => c.prefix === "/" && [c.name, ...c.aliases].includes(t.slice(1).split(/\s/)[0]!));
+  // a slash command doesn't wait behind a message on its way, nor a message behind one: were the first to fail, both
+  // would come back in the reply box as one text, the message the command's arguments (only for that moment)
+  const unsent = outgoing.filter((o) => o.sent === undefined);
+  const held = (t: string) => unsent.length > 0 && (isCommand(t.trim()) || unsent.some((o) => o.command));
+  const canSend = !handoffTarget && (!!text.trim() || att.ids.length > 0) && !att.uploading && placed && !held(text);
   const slash = useSlashMenu({ text, setText, input: inputRef, skills, commands, onRun: (t) => send(t) });
   const voice = useVoiceInput({ pid, sid, text, setText, input: inputRef });
   const barRef = useChatFloor(running && !canSend); // the queue button's room while it's away: typing doesn't move the column
@@ -767,7 +769,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
                 <Spinner /> Loading conversation…
               </div>
             )}
-            {!loading && blocks.length === 0 && emptyHint}
+            {!loading && blocks.length === 0 && !shown.length && emptyHint /* (not under a first message on its way) */}
             <Transcript
               blocks={blocks} results={st.results} running={running} cwd={cwd} forks={forks} onFork={onFork}
               steps={steps} onForkStep={onForkStep} edits={edits} editing={editing} onEdit={openEditor} editor={editor}
@@ -867,7 +869,7 @@ export const ChatView = memo(function ChatView({ pid, sid, cwd, compact, forkabl
                 className="send-btn"
                 disabled={!canSend}
                 onClick={() => send()}
-                title={!placed ? "Pick where the agent continues first" : moveTo ? "Send (Enter) — moves the agent there first" : st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}
+                title={!placed ? "Pick where the agent continues first" : held(text) ? "Once the message on its way has gone" : moveTo ? "Send (Enter) — moves the agent there first" : st.state ? "Send (Enter)" : "Send (Enter) — resumes the session"}
               >
                 <ArrowUp size={17} strokeWidth={2.4} />
               </button>

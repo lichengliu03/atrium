@@ -1,10 +1,14 @@
 // Messages on their way to an agent. Sending waits on the server — an agent closed while idle starts again first, a
 // changed message starts its process over — so the chat shows a message the moment it is sent, and the composer is
 // free for the next one meanwhile. The server's own copy of the message comes back on the session's stream under the
-// id given here, and takes its place. A message that fails goes back where it was written.
+// id given here, and takes its place. A message that fails goes back where it was written, and so do those after it.
+// What hasn't gone yet is kept in localStorage as well, under this page with a heartbeat: a page reloaded, closed or
+// dropped by the phone meanwhile leaves it there, and a later page puts back in their reply boxes the messages their
+// agent never got (reclaim, as their chats load).
 import { create } from "zustand";
 import type { Attachment, Upload } from "../api";
 import { useDrafts } from "../drafts";
+import { socket } from "../ws";
 import type { PendingUpload } from "./Composer";
 
 export interface Outgoing {
@@ -67,22 +71,27 @@ export function newMessageId(): string {
 /** How a message on its way shows its attachments: as the server will. */
 export const sentAttachments = (uploads: Upload[]): Attachment[] => uploads.map((u) => ({ name: u.name, mime: u.mime, path: u.path, url: u.url }));
 
-interface Job {
+export interface Returns {
+  error: (e: unknown) => void; // it failed (those after it don't go either: they come back too, without one)
+  back?: () => boolean; // its own way back (a changed message: its editor); false, or none: the reply box
+}
+
+interface Job extends Returns {
   o: Outgoing;
   send: () => Promise<{ id?: string }>; // the answer names the id the message's item got
-  fail: (e: unknown, later: Outgoing[]) => void;
 }
 
 const queues = new Map<string, Job[]>();
 
 /** Show `o` in its chat and `send` it, after the session's messages still on their way: they reach the agent in the
- *  order they were sent. If it fails, those after it don't go either: `fail` gets them (`later`), to put back. */
-export function post(sid: string, o: Outgoing, send: Job["send"], fail: Job["fail"]) {
-  useOutbox.getState().add(sid, o);
+ *  order they were sent. If it fails, those after it don't go either, and each goes back: `back`, else the reply box,
+ *  in order (as one text: a slash command doesn't wait behind a message, nor a message behind one, see ChatView). */
+export function post(sid: string, o: Outgoing, send: Job["send"], returns: Returns) {
   const q = queues.get(sid);
-  if (q) return void q.push({ o, send, fail });
-  queues.set(sid, [{ o, send, fail }]);
-  void pump(sid);
+  if (q) q.push({ o, send, ...returns });
+  else queues.set(sid, [{ o, send, ...returns }]);
+  useOutbox.getState().add(sid, o); // (with its job queued: kept as the one on its way, if it is)
+  if (!q) void pump(sid);
 }
 
 async function pump(sid: string) {
@@ -97,14 +106,93 @@ async function pump(sid: string) {
         if (got?.id === job.o.id) useOutbox.getState().sent(sid, job.o.id);
         else useOutbox.getState().drop(sid, [job.o.id]);
       } catch (e) {
-        const later = q.splice(0).slice(1).map((j) => j.o);
-        useOutbox.getState().drop(sid, [job.o.id, ...later.map((o) => o.id)]);
-        job.fail(e, later);
+        if (leaving) return; // the page goes, and its requests with it (one may have arrived): kept for the next (reclaim)
+        const jobs = q.splice(0); // it, and those after it: none went
+        useOutbox.getState().drop(sid, jobs.map((j) => j.o.id));
+        job.error(e);
+        backToComposer(sid, jobs.filter((j) => !j.back?.()).map((j) => j.o));
       }
     }
   } finally {
     queues.delete(sid); // whatever happened: the next message starts the session's queue again
   }
+}
+
+// ---- kept in localStorage ------------------------------------------------------------------------------------------
+
+const KEY = "atrium.outbox.";
+const MINE = KEY + socket.page;
+const GONE = 15000; // a page that hasn't beaten for this long sends nothing more (one marked gone: pagehide, at once)
+
+/** A message that hasn't gone yet; `going`: its request has left (it may still arrive). */
+interface Left {
+  sid: string;
+  id: string;
+  text: string;
+  uploads: Upload[];
+  going: boolean;
+}
+
+let beat = 0;
+let leaving = false;
+function keep(gone = false) {
+  const left: Left[] = [];
+  for (const [sid, xs] of Object.entries(useOutbox.getState().bySession))
+    for (const o of xs) if (o.sent === undefined) left.push({ sid, id: o.id, text: o.text, uploads: o.uploads, going: queues.get(sid)?.[0]?.o.id === o.id });
+  try {
+    if (left.length) localStorage.setItem(MINE, JSON.stringify({ beat: Date.now(), gone, left }));
+    else localStorage.removeItem(MINE);
+  } catch {
+    /* storage full: what goes is still in memory */
+  }
+  if (left.length && !gone) beat ||= window.setInterval(keep, 5000);
+  else if (beat) {
+    clearInterval(beat);
+    beat = 0;
+  }
+}
+useOutbox.subscribe(() => keep());
+addEventListener("pagehide", () => {
+  leaving = true;
+  keep(true);
+});
+addEventListener("pageshow", (e) => {
+  leaving = false;
+  if (e.persisted) keep(); // back from the page cache: it sends them after all
+});
+
+/** Whether a page that is gone left messages behind that haven't been put back yet. */
+export const leftBehind = () => Object.keys(localStorage).some((k) => k.startsWith(KEY) && k !== MINE);
+
+/** The messages pages gone before they went left for `sid`: those its agent got (`seen`) are done, the others go back
+ *  in its reply box (one whose request had left only once it had the time to arrive). How many went back. */
+export function reclaim(sid: string, seen: Set<string>): number {
+  const back: Left[] = [];
+  const now = Date.now();
+  for (const key of Object.keys(localStorage)) {
+    if (!key.startsWith(KEY) || key === MINE) continue;
+    let rec: { beat: number; gone?: boolean; left: Left[] };
+    try {
+      rec = JSON.parse(localStorage.getItem(key) || "");
+    } catch {
+      localStorage.removeItem(key);
+      continue;
+    }
+    const silent = now - rec.beat > GONE;
+    if (!rec.gone && !silent) continue; // its page still sends them
+    const stay = rec.left.filter((m) => {
+      if (m.sid !== sid) return true;
+      if (seen.has(m.id)) return false;
+      if (m.going && !silent) return true;
+      back.push(m);
+      return false;
+    });
+    if (stay.length === rec.left.length) continue;
+    if (stay.length) localStorage.setItem(key, JSON.stringify({ ...rec, left: stay }));
+    else localStorage.removeItem(key);
+  }
+  backToComposer(sid, back);
+  return back.length;
 }
 
 /** Uploads as the composer holds them (an image previewed from its URL: the composer's own preview is gone). */

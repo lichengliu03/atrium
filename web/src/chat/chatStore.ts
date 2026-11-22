@@ -10,7 +10,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { api, Goal, Item, LiveState, SessionRow, SessionSettings } from "../api";
 import { socket } from "../ws";
 import { useApp } from "../store";
-import { useOutbox } from "./outbox";
+import { leftBehind, reclaim, useOutbox } from "./outbox";
 
 type ResultItem = Extract<Item, { kind: "tool_result" }>;
 type PermItem = Extract<Item, { kind: "permission" }>;
@@ -45,7 +45,7 @@ export function applyAll(st: ChatState, its: Item[]): ChatState {
   for (const it of its) {
     switch (it.kind) {
       case "delta":
-        next.streaming += it.text;
+        next.streaming = it.replay ? it.text : next.streaming + it.text;
         break;
       case "state":
         next.state = it.state;
@@ -69,6 +69,7 @@ export function applyAll(st: ChatState, its: Item[]): ChatState {
         (resolved ??= new Set(st.resolved)).add(it.id);
         break;
       default: {
+        if (it.kind === "text") next.streaming = ""; // the reply that streamed, whole (also when the snapshot had it already)
         if ((seen ?? st.seen).has(it.id)) {
           // harnesses may re-send a tool call once its input is final (upsert)
           const i = it.kind === "tool" ? (items ?? st.items).findIndex((x) => x.kind === "tool" && x.id === it.id) : -1;
@@ -78,7 +79,6 @@ export function applyAll(st: ChatState, its: Item[]): ChatState {
         }
         (seen ??= new Set(st.seen)).add(it.id);
         (items ??= [...st.items]).push(it);
-        if (it.kind === "text") next.streaming = "";
         if (it.kind === "system" && it.subtype === "init") {
           next.mode = it.permission_mode ?? next.mode;
           next.model = it.model ?? next.model;
@@ -88,7 +88,7 @@ export function applyAll(st: ChatState, its: Item[]): ChatState {
     }
     changed = true;
   }
-  if (!changed) return st;
+  if (!changed && next.streaming === st.streaming) return st; // (a reply seen before still ends its stream)
   if (items) next.items = items;
   if (seen) next.seen = seen;
   if (results) next.results = results;
@@ -190,6 +190,7 @@ function flush(s: Slot) {
   s.queued = [];
   const st = applyAll(s.chat.st, its);
   if (st !== s.chat.st) set(s, { ...s.chat, st });
+  if (orphans) putBack(s);
 }
 
 function load(s: Slot): Promise<void> {
@@ -219,6 +220,7 @@ function load(s: Slot): Promise<void> {
       s.rowAt = snap.session?.updated_at ?? null;
       set(s, { st: reuse(s.chat.st, st), row: snap.session, settings: snap.settings ?? s.chat.settings, loading: false });
       useOutbox.getState().settle(s.sid, st.seen, asked); // the messages on their way it has
+      if (orphans) putBack(s);
     })
     .catch((e) => {
       if (n !== s.loads || slots.get(s.key) !== s) return;
@@ -268,6 +270,26 @@ function trim() {
   for (const s of idle) if (s.pid !== pid) drop(s);
   const spare = idle.filter((s) => s.pid === pid && !attached(s)).sort((a, b) => a.used - b.used);
   for (const s of spare.slice(0, Math.max(0, spare.length - KEEP))) drop(s);
+}
+
+// messages a page gone before they went left behind (outbox): back in their reply boxes, as their chats load, or the
+// stream shows which arrived after all; looked at again meanwhile, for one whose request had left (it may still arrive)
+let orphans = leftBehind();
+function putBack(s: Slot) {
+  const n = reclaim(s.sid, s.chat.st.seen);
+  if (n) {
+    const r = useApp.getState().sessions.find((x) => x.id === s.sid);
+    const where = s.listeners.size ? "the reply box" : `${r?.name || r?.title || "its agent"}'s reply box`;
+    useApp.getState().toast(`${n === 1 ? "A message" : `${n} messages`} the page had no time to send ${n === 1 ? "is" : "are"} back in ${where}`, "info");
+  }
+  orphans = leftBehind();
+}
+if (orphans) {
+  const look = window.setInterval(() => {
+    for (const s of slots.values()) if (s.ready && orphans) putBack(s);
+    if (!orphans) clearInterval(look);
+  }, 3000);
+  window.setTimeout(() => clearInterval(look), 120000); // (left for a page that opens their chats)
 }
 
 let warming = false;

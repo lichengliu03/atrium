@@ -34,9 +34,13 @@ export function MessageEditor({ text: sent, attachments, draft, later, running, 
   const att = useAttachments(held);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // an image the transcript holds itself (Claude's history) comes as an upload (written out when the history is read);
-  // one still inline, which couldn't be written, is uploaded again; one with neither can't be sent again
+  // one still inline, which couldn't be written, is uploaded again; one with neither can't be sent again. Once: shown
+  // again after its chat was kept hidden (App's ChatColumn), the effect runs again, and `held` already has them
   const [lost, setLost] = useState(0);
+  const converted = useRef(false);
   useEffect(() => {
+    if (converted.current) return;
+    converted.current = true;
     const inline = draft ? [] : attachments.filter((a) => a.url?.startsWith("data:")); // a draft has its uploads
     setLost(attachments.filter((a) => !a.url?.startsWith(UPLOADS) && !a.url?.startsWith("data:")).length);
     void Promise.all(inline.map((a) => fetch(a.url!).then((r) => r.blob()).then((b) => new File([b], `${a.name}.${(b.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: b.type }))))
