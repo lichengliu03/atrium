@@ -2,12 +2,12 @@
 // details on hover) — those doing the board's TODOs in a section of their own —, the full agent
 // list as a flyout, the system agents, settings.
 import type { ReactNode } from "react";
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
-  Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, Gem,
+  Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, ChevronDown, ChevronUp, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, Gem,
   Ghost, GitBranch, House, LayoutList, Leaf, ListTodo, LogOut, Menu, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
@@ -38,8 +38,6 @@ export function liveLabel(s: Pick<SessionRow, "live" | "pending">): string {
   if (s.live === "idle") return "attached";
   return "";
 }
-
-const isActive = (s: SessionRow) => s.live === "running" || s.live === "waiting" || s.live === "starting" || s.pending > 0;
 
 /** One screen (single layout): the rail is a drawer, and this opens it — from the right end of whichever bar is on
  *  top. The dot: an agent waits for you, which the rail would have shown. */
@@ -235,13 +233,12 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
   }, [onClose]);
   const workers = useMemo(() => {
     const f = filter.trim().toLowerCase();
-    return sessions.filter(
-      (s) => s.role === "worker" && (!f || displayName(s).toLowerCase().includes(f) || (s.first_prompt || "").toLowerCase().includes(f) || (s.branch || "").toLowerCase().includes(f)),
-    );
+    return sessions
+      .filter((s) => s.role === "worker" && (!f || displayName(s).toLowerCase().includes(f) || (s.first_prompt || "").toLowerCase().includes(f) || (s.branch || "").toLowerCase().includes(f)))
+      .sort(byCreation); // as in the rail, then the archived ones
   }, [sessions, filter]);
-  const active = workers.filter((s) => !s.archived && !s.todo && isActive(s));
-  const rest = workers.filter((s) => !s.archived && !s.todo && !isActive(s));
-  const todos = workers.filter((s) => !s.archived && s.todo).sort(byCreation); // started for the board's TODOs: apart, in the order they came
+  const current = workers.filter((s) => !s.archived && !s.todo);
+  const todos = workers.filter((s) => !s.archived && s.todo); // started for the board's TODOs: apart, in the order they came
   const archived = workers.filter((s) => s.archived);
   const item = (s: SessionRow) => (
     <div key={s.id} className={clsx("sb-row", s.id === sessionId && "active")}>
@@ -301,10 +298,8 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
         <input autoFocus className="input" style={{ paddingLeft: 26, height: 30, fontSize: 12.5 }} placeholder="Filter agents" value={filter} onChange={(e) => setFilter(e.target.value)} />
       </div>
       <div className="fly-scroll">
-        {active.length > 0 && <div className="sb-title">Active</div>}
-        {active.map(item)}
-        {rest.length > 0 && <div className="sb-title">{active.length ? "Others" : "All"}</div>}
-        {rest.map(item)}
+        {current.length > 0 && <div className="sb-title">All</div>}
+        {current.map(item)}
         {todos.length > 0 && <div className="sb-title">TODO agents</div>}
         {todos.map(item)}
         {archived.length > 0 && <div className="sb-title">Archived</div>}
@@ -316,6 +311,15 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
 }
 
 // ---------------------------------------------------------------- rail
+/** Scroll the rail's list, and only it (scrollIntoView would move the drawer too), until el is whole in view, `clear`
+ *  px off the edge it came in by. */
+function showInList(box: HTMLElement, el: HTMLElement, clear = 8, smooth = false) {
+  const r = el.getBoundingClientRect();
+  const b = box.getBoundingClientRect();
+  const by = r.top < b.top ? r.top - b.top - clear : r.bottom > b.bottom ? r.bottom - b.bottom + clear : 0;
+  if (by) box.scrollBy({ top: by, behavior: smooth ? "smooth" : "auto" });
+}
+
 export const Rail = memo(function Rail() {
   useTick(30000);
   const {
@@ -330,14 +334,55 @@ export const Rail = memo(function Rail() {
   const [flyout, setFlyout] = useState(false);
   const [collapsed, setCollapsed] = useState(false); // the selected agent's subagents open under it, unless clicked shut
   const glyphs = useGlyphs();
-  const workers = useMemo(() => {
-    const w = sessions.filter((s) => s.role === "worker" && !s.archived && !s.todo);
-    return [...w.filter(isActive), ...w.filter((s) => !isActive(s))];
-  }, [sessions]);
+  const workers = useMemo(() => sessions.filter((s) => s.role === "worker" && !s.archived && !s.todo).sort(byCreation), [sessions]);
   // the agents Atrium started for the board's TODOs: a section of their own under the others, each where it came
   const todoAgents = useMemo(() => sessions.filter((s) => s.role === "worker" && !s.archived && s.todo).sort(byCreation), [sessions]);
   const childOpen = !!subagentId || !!compactionId; // a subagent or compacted history in the chat column, not the agent's chat
   useEffect(() => setCollapsed(false), [sessionId, subagentId, compactionId]);
+  // the open agent scrolled into view, a new one being last
+  const agentsRef = useRef<HTMLDivElement>(null);
+  const listed = [...workers, ...todoAgents].some((s) => s.id === sessionId);
+  useEffect(() => {
+    const box = agentsRef.current;
+    const el = box?.querySelector<HTMLElement>(".rail-agent.on, .rail-agent.parent-on");
+    if (box && el) showInList(box, el);
+  }, [sessionId, listed]);
+  // agents that need you (the drawer button's dot) but are scrolled out of the list's view: a mark on that edge, which
+  // scrolls to the nearest of them. They keep their places, so nothing else would say where they are
+  const [peek, setPeek] = useState({ up: false, down: false });
+  const measure = useCallback(() => {
+    const box = agentsRef.current;
+    if (!box) return;
+    const b = box.getBoundingClientRect();
+    let up = false;
+    let down = false;
+    for (const el of box.querySelectorAll<HTMLElement>(".rail-agent[data-needs-you]")) {
+      const r = el.getBoundingClientRect();
+      up ||= r.top < b.top;
+      down ||= r.bottom > b.bottom;
+    }
+    setPeek((p) => (p.up === up && p.down === down ? p : { up, down }));
+  }, []);
+  useLayoutEffect(() => measure()); // every render: who needs you, and where, comes with the list
+  useEffect(() => {
+    const box = agentsRef.current;
+    if (!box) return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [measure, !!project]);
+  // to the nearest of them on that side, clear of the mark: it stays while another waits further on
+  const reveal = (mark: HTMLElement, up: boolean) => {
+    const box = agentsRef.current;
+    if (!box) return;
+    const b = box.getBoundingClientRect();
+    const off = [...box.querySelectorAll<HTMLElement>(".rail-agent[data-needs-you]")].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return up ? r.top < b.top : r.bottom > b.bottom;
+    });
+    const el = up ? off[off.length - 1] : off[0];
+    if (el) showInList(box, el, mark.offsetHeight + 4, true);
+  };
   // subagent progress rarely triggers a session event (and can only be guessed for CLI sessions): poll meanwhile
   useInterval(() => void refreshSessions(), [...workers, ...todoAgents].some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
   // the open agent's own chat on screen: a click folds what opened under it. Not on screen (a panel on one screen, the
@@ -367,6 +412,7 @@ export const Rail = memo(function Rail() {
       <Fragment key={s.id}>
         <button
           className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
+          data-needs-you={sc === "waiting" || undefined}
           onClick={click(() => pickAgent(s, kids))}
           aria-expanded={kids ? open : undefined}
           {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
@@ -409,21 +455,37 @@ export const Rail = memo(function Rail() {
             {draftWaiting && sessionId && <span className="draft-dot" />}
           </button>
           <div className="rail-sep" />
-          <div className="rail-agents">
-            {workers.map(agent)}
-            {todoAgents.length > 0 && (
-              <div className="rail-todo">
-                <button
-                  className="rail-btn rail-group"
-                  onClick={click(() => setPanel("board"))}
-                  aria-label="TODO agents"
-                  data-tip="TODO agents — doing your TODOs. Open the board"
-                  data-tip-side="left"
-                >
-                  <ListTodo size={15} />
-                </button>
-                {todoAgents.map(agent)}
-              </div>
+          <div className="rail-agents-wrap">
+            <div className="rail-agents" ref={agentsRef} onScroll={measure} onTransitionEnd={measure}>
+              {workers.map(agent)}
+              {todoAgents.length > 0 && (
+                <div className="rail-todo">
+                  <button
+                    className="rail-btn rail-group"
+                    onClick={click(() => setPanel("board"))}
+                    aria-label="TODO agents"
+                    data-tip="TODO agents — doing your TODOs. Open the board"
+                    data-tip-side="left"
+                  >
+                    <ListTodo size={15} />
+                  </button>
+                  {todoAgents.map(agent)}
+                </div>
+              )}
+            </div>
+            {peek.up && (
+              <button className="rail-peek up" onClick={(e) => reveal(e.currentTarget, true)} aria-label="An agent above needs you" data-tip="An agent above needs you" data-tip-side="left">
+                <span>
+                  <ChevronUp size={13} strokeWidth={2.5} />
+                </span>
+              </button>
+            )}
+            {peek.down && (
+              <button className="rail-peek down" onClick={(e) => reveal(e.currentTarget, false)} aria-label="An agent below needs you" data-tip="An agent below needs you" data-tip-side="left">
+                <span>
+                  <ChevronDown size={13} strokeWidth={2.5} />
+                </span>
+              </button>
             )}
           </div>
           <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={() => setFlyout((o) => !o)} aria-label="All agents" data-tip="All agents" data-tip-side="left">

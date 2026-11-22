@@ -179,6 +179,7 @@ html, body { overscroll-behavior: none; } /* the app doesn't rubber-band as a wh
   .rail-sub .st { right: 0; bottom: 0; }
   .rail-subs-inner { gap: 4px; }
   .rail-subs-inner::before { bottom: 20px; }
+  .rail-peek { height: 30px; } /* the same 16px mark */
   .topbar .t-name .crumb { padding-top: 6px; padding-bottom: 6px; }
   .f-loc { padding: 5px 0; }
   /* the attachment's remove button: a fingertip gets 30px, but the circle you see stays 18px —
