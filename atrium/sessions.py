@@ -32,6 +32,7 @@ from .mcp.web import WEB_SERVER, web_toolset
 from .notify import notifier
 from .project import Project
 from .review import REVIEW_AGENT_ALLOWED_TOOLS, REVIEW_AGENT_DISALLOWED_TOOLS, REVIEW_SERVER, review_language, review_toolset
+from .todo_agent import todo_note
 
 log = logging.getLogger("atrium.sessions")
 
@@ -133,7 +134,8 @@ class SessionManager:
 
     # ---- spec --------------------------------------------------------------
     def _spec(self, project: Project, sid: str | None, *, resume: bool, harness_id: str, cwd: str, name: str, role: str,
-              model: str | None, effort: str | None, mode: str | None, resume_at: str | None = None) -> LiveSpec:
+              model: str | None, effort: str | None, mode: str | None, resume_at: str | None = None,
+              todo: dict[str, Any] | None = None) -> LiveSpec:
         web = config.get("web") or {}
         hdef = config.harness_defaults(harness_id)
         disallowed: list[str] = []
@@ -165,6 +167,9 @@ class SessionManager:
             worktree = _worktree_note(project, cwd)
             if worktree:
                 append += "\n\n" + worktree
+            todo = todo or meta.get("todo")  # an agent Atrium started for one of the board's TODOs (todo_agent.py)
+            if todo:
+                append += "\n\n" + todo_note(todo, cwd)
         harness = get_harness(harness_id)
         modes = [m["id"] for m in harness.permission_modes]
         default_mode = {"git": harness.git_agent_mode, "review": harness.review_agent_mode}.get(role) or hdef.get("permission_mode")
@@ -426,6 +431,7 @@ class SessionManager:
                 "effort": (h.effort if h else None) or m.get("effort") or "",
                 "transcript": transcript,
                 "forked_from": {"session": fork.get("session"), "name": fork.get("name")} if fork else None,
+                "todo": (m.get("todo") or {}).get("id"),  # the board TODO Atrium started it for (todo_agent.py)
             }
 
         for s in summaries:
@@ -526,13 +532,13 @@ class SessionManager:
 
     async def _start(self, project: Project, sid: str | None, *, resume: bool, harness_id: str, cwd: str, name: str, role: str,
                      model: str | None, effort: str | None, mode: str | None, preload: list[Item] | None = None,
-                     resume_at: str | None = None) -> LiveHandle:
+                     resume_at: str | None = None, todo: dict[str, Any] | None = None) -> LiveHandle:
         harness = get_harness(harness_id)
         ok, reason = harness.available()
         if not ok:
             raise RuntimeError(reason or f"{harness.label} is not available")
         spec = self._spec(project, sid, resume=resume, harness_id=harness_id, cwd=cwd, name=name, role=role, model=model, effort=effort, mode=mode,
-                          resume_at=resume_at)
+                          resume_at=resume_at, todo=todo)
         h = LiveHandle(sid=sid or f"pending-{uuid.uuid4().hex[:8]}", project=project, harness_id=harness_id, role=role, cwd=cwd, name=name,
                        model=spec.model, effort=spec.effort, mode=spec.permission_mode)
         for it in preload or []:
@@ -559,17 +565,18 @@ class SessionManager:
 
     async def create(self, project: Project, *, name: str, prompt: str | None, harness_id: str | None = None, cwd: str | None = None,
                      model: str | None = None, effort: str | None = None, mode: str | None = None, role: str = "worker",
-                     attachments: list[Attachment] | None = None) -> str:
+                     attachments: list[Attachment] | None = None, todo: dict[str, Any] | None = None) -> str:
+        """``todo``: the agent of one of the board's TODOs (``TodoAgent._workspace``), kept in its meta."""
         harness_id = get_harness(harness_id or config.get("defaults.harness")).id
         cwd = os.path.realpath(cwd or project.path)
         project.resolve(".", root=cwd)  # validates cwd belongs to the project
         # An empty name leaves the session unnamed; the Tracker Agent will name it ("<Topic> Agent").
         name = (name or "").strip()
         h = await self._start(project, None, resume=False, harness_id=harness_id, cwd=cwd, name=name or "Agent", role=role,
-                              model=model, effort=effort, mode=mode)
+                              model=model, effort=effort, mode=mode, todo=todo)
         sid = h.sid
         project.set_session_meta(sid, name=name or None, name_source="user" if name else None, harness=harness_id, role=role,
-                                 created_by="atrium", cwd=cwd, effort=h.effort, model=h.model, mode=h.mode)
+                                 created_by="atrium", cwd=cwd, effort=h.effort, model=h.model, mode=h.mode, todo=todo)
         if role == "worker":
             project.board.update_agent(
                 sid, name=name or None, status="working" if prompt else "idle", progress=0, doing="Starting…" if prompt else "",

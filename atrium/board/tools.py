@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..harness.base import ToolSpec
-from .template import is_suggestion
+from .template import is_suggestion, worker_state
 
 if TYPE_CHECKING:
     from ..project import Project
@@ -49,7 +49,8 @@ def board_toolset(project: "Project", session_id: str | Callable[[], str | None]
         return "Noted on the timeline."
 
     async def todo_add(args: dict[str, Any]) -> str:
-        mine = bool(args.get("requested"))
+        # an agent doing a TODO only suggests: what it put in the human's list would get an agent of its own, and so on
+        mine = bool(args.get("requested")) and not project.session_meta(sid()).get("todo")
         try:
             t = board.add_todo(args.get("text") or "", sid=sid(), why=args.get("why") or "", source="human" if mine else "agent")
         except ValueError as e:
@@ -93,7 +94,7 @@ def board_toolset(project: "Project", session_id: str | Callable[[], str | None]
         if todos:
             lines.append("Open TODOs (the human's, then agents' suggestions they haven't accepted yet):")
             lines += [f"  · {t['id']}: {t['text']}" + (f" (suggested by {t.get('agent') or 'an agent'})" if is_suggestion(t) else "")
-                      for t in todos[:TODOS_READ]]
+                      + _worker(t, snap["agents"], sid()) for t in todos[:TODOS_READ]]
             if len(todos) > TODOS_READ:
                 lines.append(f"  · … and {len(todos) - TODOS_READ} more")
         recent = snap["timeline"][-8:]
@@ -179,3 +180,14 @@ def board_toolset(project: "Project", session_id: str | Callable[[], str | None]
             read_only=True,
         ),
     ]
+
+
+def _worker(t: dict[str, Any], agents: dict[str, Any], me: str) -> str:
+    """What board.read() says of the agent Atrium started for a TODO (todo_agent.py), so that no other takes it on."""
+    st = worker_state(t, agents)
+    w = t.get("worker") or {}
+    if st in ("starting", "working", "approval"):
+        return " [you are doing it]" if w.get("session") == me else f" [{w.get('name') or 'an agent'} is doing it]"
+    if st in ("waiting", "reopened"):
+        return f" [{w.get('name') or 'its agent'} waits for the human on it]"
+    return ""

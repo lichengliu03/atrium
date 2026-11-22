@@ -132,12 +132,31 @@ h2 .count{font:500 12px var(--sans);color:var(--muted);background:var(--bg2);bor
 details.todo-done{border:0;border-radius:0;padding:0;margin:14px 0 0}
 .todo-done summary{display:flex;align-items:center;gap:8px;font:600 11px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
 .todo-empty{color:var(--muted);font-size:12.5px;margin:2px 0}
-.todo.pending{opacity:.5;pointer-events:none}
-html:not(.embedded) :is(.todo-add,.todo-acts){display:none}
+.todo.pending,.todo-auto.pending{opacity:.5;pointer-events:none}
+/* the agent Atrium started for a TODO (todo_agent.py): where it stands; a tap opens its chat */
+.todo-run{display:flex;align-items:baseline;gap:6px;font-size:12px;color:var(--muted);margin-top:3px;cursor:pointer}
+.todo-run .dot{width:7px;height:7px;align-self:center}
+.todo-run .txt{min-width:0}
+.todo-run .when{color:var(--faint);font-size:11.5px;white-space:nowrap}
+.todo-run.st-working,.todo-run.st-starting{color:var(--accent2)}
+.todo-run.st-starting .dot{background:var(--accent);animation:pulse 1.6s ease-in-out infinite}
+.todo-run.st-waiting,.todo-run.st-approval{color:var(--warn)}
+.todo-run.st-approval .dot{background:var(--warn);box-shadow:0 0 0 3px var(--warn-bg)}
+.todo-run.st-stopped,.todo-run.st-failed{color:var(--err)}
+.todo-run.st-stopped .dot,.todo-run.st-failed .dot{background:var(--err)}
+.todo-run:is(.st-queued,.st-deleted){color:var(--faint);cursor:default}
+.todo-run.st-reopened .dot{background:var(--ok)}
+.todo-acts .run{color:var(--accent2);font-size:12px}
+/* the TODO heading's switch: agents do these TODOs, or only when one's ▶ is pressed */
+.todo-auto{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font:600 11px/1 var(--sans);letter-spacing:.02em;color:var(--muted);background:var(--bg2);border:1px solid var(--line);border-radius:99px;padding:5px 10px 5px 8px;cursor:pointer}
+.todo-auto::before{content:"";width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint);box-sizing:border-box}
+.todo-auto.on{color:var(--accent2);background:var(--accent-bg);border-color:transparent}
+.todo-auto.on::before{background:var(--accent);border-color:var(--accent)}
+html:not(.embedded) :is(.todo-add,.todo-acts,.todo-auto){display:none}
 html:not(.embedded) .todo-box{pointer-events:none}
 /* a mouse brings the delete button with it; a finger has it showing */
 @media (hover:hover){.todos:not(.sug) .todo-acts{opacity:0}.todo:hover .todo-acts,.todo:focus-within .todo-acts{opacity:1}}
-@media (pointer:coarse){.todo button{width:30px;height:30px}.todo-add button{width:36px}.todo-add input{min-height:34px}}
+@media (pointer:coarse){.todo button{width:30px;height:30px}.todo-add button{width:36px}.todo-add input{min-height:34px}.todo-auto{min-height:30px}}
 /* ---- design system for agent-authored cards ---- */
 table{border-collapse:collapse;width:100%;font-size:13px;margin:.6em 0}
 th,td{border-bottom:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
@@ -189,6 +208,7 @@ table{font-size:11.5px}code,pre{font-size:11px}
 .timeline li{font-size:12px}
 .cols{column-gap:18px}
 .todo-text,.todo-add input{font-size:12px}.todo-why{font-size:11.5px}.todo-meta{font-size:11px}
+.todo-run{font-size:11.5px}.todo-run .when{font-size:11px}
 }
 """
 
@@ -233,6 +253,7 @@ JS = r"""
     if(act && embedded){
       var a = act.getAttribute('data-act'), li = act.closest('[data-todo]');
       if(a === 'add') addTodo();
+      else if(a === 'auto'){ act.classList.add('pending'); todo({action:'auto', on: act.getAttribute('aria-pressed') !== 'true'}); }
       else if(li){ li.classList.add('pending'); todo({action:a, id:li.getAttribute('data-todo')}); }
       return;
     }
@@ -361,42 +382,109 @@ def is_suggestion(t: dict[str, Any]) -> bool:
     return t.get("source") == "agent" and not t.get("accepted") and not t.get("done")
 
 
+def in_list_since(t: dict[str, Any]) -> float:
+    """When a TODO got into the human's list: added there, or accepted."""
+    if t.get("source") == "agent":
+        return t.get("accepted_at") or t.get("updated_at") or t.get("created_at") or 0
+    return t.get("created_at") or 0
+
+
+def due_for_agent(t: dict[str, Any], since: float) -> bool:
+    """An open TODO of the human's that an agent takes on by itself while the board's switch is on: one with none yet,
+    which got into their list after ``since`` (``todo_auto_since``)."""
+    return not t.get("done") and not is_suggestion(t) and not t.get("worker") and in_list_since(t) >= since
+
+
 def _who(t: dict[str, Any]) -> str:
     return f'<span class="who" data-session="{_e(t.get("session_id"))}">{_e(t.get("agent") or "Agent")}</span>' if t.get("session_id") else _e(t.get("agent"))
 
 
-def _todo(t: dict[str, Any]) -> str:
+# the line a TODO's agent (todo_agent.py) gets under it, by where it stands
+WORKER_LABEL = {
+    "queued": "Queued for an agent",
+    "starting": "An agent is starting on it",
+    "working": "Agent working",
+    "approval": "Agent waits for your approval",
+    "waiting": "Agent needs you",
+    "stopped": "Agent stopped",
+    "failed": "No agent could start",
+    "deleted": "Its agent was deleted",
+    "reopened": "Reopened: tell its agent what is missing",
+}
+RUN_AGAIN = {"stopped": "Continue", "failed": "Try again", "deleted": "Start a new agent"}  # ↻ on the TODO
+
+
+def worker_state(t: dict[str, Any], agents: dict[str, Any]) -> str | None:
+    """Where the agent doing an open TODO stands: its ``worker.state``, or what its process does now (the human
+    answered it, it asks for an approval). None: it has none."""
+    w = t.get("worker")
+    if not w or t.get("done"):
+        return None
+    st = w.get("state") or "working"
+    live = ((agents.get(w.get("session") or "") or {}).get("stats") or {}).get("live")
+    if st == "starting":
+        return st
+    if live == "waiting":
+        return "approval"
+    if live in ("starting", "running"):
+        return "working"
+    return "reopened" if st == "done" else st
+
+
+def _todo(t: dict[str, Any], agents: dict[str, Any], auto: bool, since: float) -> str:
     sug, done = is_suggestion(t), bool(t.get("done"))
+    w = t.get("worker") or {}
+    run = ""
     if done:
-        meta = f"done by {_e(t['done_by'])} · " if t.get("done_by") else "done "
+        who = _e(t["done_by"])
+        if w.get("session") and w.get("name") == t.get("done_by"):  # its agent: a tap opens it
+            who = f'<span class="who" data-session="{_e(w["session"])}">{who}</span>'
+        meta = f"done by {who} · " if t.get("done_by") else "done "
         meta += _ts(t.get("done_at"))
     else:
         meta = ("" if sug else "from " if t.get("source") == "agent" else "via ") + _who(t) + " · " if t.get("agent") else ""
         meta += _ts(t.get("created_at"))
+        st = None if sug else worker_state(t, agents) or ("queued" if auto and due_for_agent(t, since) else None)
+        if st:
+            label = WORKER_LABEL[st] + (f": {w['error']}" if st in ("stopped", "failed") and w.get("error") else "")
+            opens = f' data-session="{_e(w["session"])}"' if w.get("session") and st not in ("queued", "deleted") else ""
+            when = f' <span class="when">{_ts(w.get("at"))}</span>' if st not in ("queued", "deleted") and w.get("at") else ""
+            run = f'<div class="todo-run st-{st}"{opens}><span class="dot"></span><span class="txt">{_e(label)}</span>{when}</div>'
     box = "" if sug else (f'<button class="todo-box" data-act="{"reopen" if done else "done"}" aria-label="{"Not done" if done else "Done"}" '
                           f'title="{"Not done" if done else "Done"}"></button>')
-    acts = ('<button class="accept" data-act="accept" aria-label="Add to my TODOs" title="Add to my TODOs">✓</button>'
-            '<button data-act="remove" aria-label="Dismiss" title="Dismiss">×</button>') if sug else \
-        '<button data-act="remove" aria-label="Delete" title="Delete">×</button>'
+    if sug:
+        acts = ('<button class="accept" data-act="accept" aria-label="Add to my TODOs" title="Add to my TODOs">✓</button>'
+                '<button data-act="remove" aria-label="Dismiss" title="Dismiss">×</button>')
+    else:
+        acts = '<button data-act="remove" aria-label="Delete" title="Delete">×</button>'
+        st = worker_state(t, agents)
+        if not done and st is None:
+            acts = '<button class="run" data-act="run" aria-label="Have an agent do it now" title="Have an agent do it now">▶</button>' + acts
+        elif not done and st in RUN_AGAIN:
+            acts = f'<button class="run" data-act="run" aria-label="{RUN_AGAIN[st]}" title="{RUN_AGAIN[st]}">↻</button>' + acts
     return f"""<li class="todo{' done' if done else ''}" data-todo="{_e(t.get('id'))}">{box}<div class="todo-main">
 <div class="todo-text">{_e(t.get('text'))}</div>{f'<div class="todo-why">{_e(t.get("why"))}</div>' if t.get('why') and not done else ''}
-<div class="todo-meta">{meta}</div></div><span class="todo-acts">{acts}</span></li>"""
+{run}<div class="todo-meta">{meta}</div></div><span class="todo-acts">{acts}</span></li>"""
 
 
-def _todos(todos: list[dict[str, Any]]) -> tuple[int, str]:
+def _todos(todos: list[dict[str, Any]], agents: dict[str, Any], auto: bool, since: float) -> tuple[int, str]:
     """How many of the human's are open, and the list: theirs, agents' suggestions, done (folded)."""
     mine = sorted((t for t in todos if not t.get("done") and not is_suggestion(t)), key=lambda t: -(t.get("created_at") or 0))
     sug = sorted((t for t in todos if is_suggestion(t)), key=lambda t: -(t.get("created_at") or 0))
     done = sorted((t for t in todos if t.get("done")), key=lambda t: -(t.get("done_at") or 0))
-    out = f'<ul class="todos">{"".join(map(_todo, mine))}</ul>' if mine else '<p class="todo-empty">Nothing open.</p>'
+
+    def items(ts: list[dict[str, Any]]) -> str:
+        return "".join(_todo(t, agents, auto, since) for t in ts)
+
+    out = f'<ul class="todos">{items(mine)}</ul>' if mine else '<p class="todo-empty">Nothing open.</p>'
     if sug:
-        out += f'<div class="todo-group">Suggested by agents <span class="count">{len(sug)}</span></div><ul class="todos sug">{"".join(map(_todo, sug))}</ul>'
+        out += f'<div class="todo-group">Suggested by agents <span class="count">{len(sug)}</span></div><ul class="todos sug">{items(sug)}</ul>'
     if done:
-        out += f'<details class="todo-done" id="todo-done"><summary>Done <span class="count">{len(done)}</span></summary><ul class="todos">{"".join(map(_todo, done))}</ul></details>'
+        out += f'<details class="todo-done" id="todo-done"><summary>Done <span class="count">{len(done)}</span></summary><ul class="todos">{items(done)}</ul></details>'
     return len(mine), out
 
 
-def render_board(state: dict[str, Any], project_name: str, project_path: str) -> str:
+def render_board(state: dict[str, Any], project_name: str, project_path: str, todo_auto: bool = False) -> str:
     agents = [a for a in state.get("agents", {}).values() if not (a.get("stats") or {}).get("archived")]
     agents.sort(key=_agent_order)
     active = sum(1 for a in agents if a.get("status") in ("working", "waiting", "blocked") or (a.get("stats") or {}).get("live") in ("running", "waiting"))
@@ -424,7 +512,8 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
         for t in tl
     ) or '<li class="muted">Nothing yet.</li>'
 
-    n_todo, todo_html = _todos(state.get("todos") or [])
+    n_todo, todo_html = _todos(state.get("todos") or [], state.get("agents") or {}, todo_auto, state.get("todo_auto_since") or 0)
+    auto_tip = "Agents do these TODOs: on. Click to turn it off" if todo_auto else "Agents do these TODOs: off (▶ on one starts its agent). Click to turn it on"
 
     updated = state.get("updated_at") or time.time()
     return f"""<!doctype html>
@@ -446,7 +535,7 @@ def render_board(state: dict[str, Any], project_name: str, project_path: str) ->
 <div class="cols">
   <div class="c-results" data-region="results"><h2>Results <span class="count">{len(cards)}</span></h2><section class="results">{card_html}</section></div>
   <div class="c-todo">
-    <h2 data-region="todo-head">TODO <span class="count">{n_todo}</span></h2>
+    <h2 data-region="todo-head">TODO <span class="count">{n_todo}</span><button class="todo-auto{' on' if todo_auto else ''}" data-act="auto" aria-pressed="{'true' if todo_auto else 'false'}" aria-label="Agents do these TODOs" title="{auto_tip}">Auto</button></h2>
     <div class="todo-add"><input id="todo-input" type="text" placeholder="Add a TODO…" maxlength="300" enterkeyhint="done" autocomplete="off" aria-label="New TODO"><button data-act="add" aria-label="Add" title="Add">+</button></div>
     <div data-region="todos">{todo_html}</div>
   </div>

@@ -40,6 +40,15 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
    * **A TODO list** on the board: yours (add, check off and delete them on the board, or ask an
      agent to note one down), and what agents suggest as follow-up work, which you accept into
      your list or dismiss. Agents check off what they finish.
+   * **TODO agents** do your TODOs. Each one that gets into your list gets an agent of its own,
+     started by Atrium half a minute later (two at a time, the rest wait their turn). It works in a
+     new worktree on branch `todo/<id>`, commits, fast-forwards the branch your project directory
+     has checked out to its work, and checks the TODO off. What only you can do or decide (a choice,
+     a check on a device, a restart) it prepares, then tells you it needs you. The TODO shows where
+     its agent stands, a tap opens its chat, and ↻ sets a stopped one going again. The rail keeps
+     these agents in a section of their own and archives them after three idle days. The *Auto*
+     switch by the TODO heading turns them off per project (then ▶ starts one); `todo_agent` in the
+     settings.
    * **The Tracker Agent** (one per project, in the background) is proactive: on an interval,
      shortly after any turn ends, or on demand, it diffs *every* session transcript against its
      previous run (byte offsets), compresses the new activity (what the agents wrote and reasoned,
@@ -286,7 +295,7 @@ own login, so you log in once more there.
 
 | Path | What |
 |---|---|
-| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
+| `~/.atrium/settings.json` | Atrium settings: defaults per harness (mode / model / effort), tracker, Git Agent, Code Review Agent (`review_agent`: auto, harness / model / effort, language), TODO agents (`todo_agent`: auto, harness / model / effort, how many at once, merge, archiving), desktop notifications, web keys (`chmod 600`; env vars take precedence), extra MCP servers |
 | `~/.atrium/config.json` | the project list: pinned / archived, how often you opened each |
 | `~/.atrium/auth.json` | the login: the password's hash (and the made-up password, until you set yours), the secret that signs login cookies, the API token (`chmod 600`) |
 | `~/.atrium/uploads/` | composer attachments, and the images in Claude conversations (their transcripts hold them as base64), written out once to be shown in the chat |
@@ -354,6 +363,7 @@ atrium/
   tracker.py             the per-project Tracker Agent
   gitagent.py            graph.set_view tool for the Git Agent
   review.py              the Code Review Agent: when to review, review rounds and findings, the review.* tools
+  todo_agent.py          TODO agents: one per TODO of the human's, in a worktree of its own; queue, follow-up, archiving
   lsp.py                 language servers for the editor, shared by all tabs over /ws/lsp
   gitops.py, fs.py       git plumbing, sandboxed file access (and the keyed folders HTML previews load from)
   changes.py             per-session change sets (diff review)

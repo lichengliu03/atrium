@@ -91,6 +91,7 @@ The defaults:
   "tracker": {"enabled": true, "chats": false, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
   "git_agent": {"harness": "claude-code", "model": ""},
   "review_agent": {"auto": true, "chats": false, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
+  "todo_agent": {"auto": true, "chats": false, "harness": "", "model": "", "effort": "", "delay_seconds": 30, "max_concurrent": 2, "merge": true, "archive_after_days": 3},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
@@ -150,7 +151,7 @@ Git Agent asks before anything else.
 How notifications reach the desktop (osascript, terminal-notifier, notify-send) is in the
 [README](../README.md#where-things-live).
 
-### Tracker, Git Agent, Code Review Agent
+### Tracker, Git Agent, Code Review Agent, TODO agents
 
 The **Tracker Agent** (one per project) keeps the board's status lines, headline and timeline current and
 names new agents.
@@ -185,6 +186,24 @@ and effort are read when an agent gets its reviewer, at the first review; later 
 | `review_agent.language` | `""` | The language the reviewer writes in; `""` = yours. |
 | `review_agent.delay_seconds` | `15` | How long after the turn a review starts; skipped when the agent is busy again by then. |
 | `review_agent.max_concurrent` | `2` | Automatic reviews running at once. *Review* doesn't wait. |
+
+**TODO agents** do the board's TODOs that are yours: the ones you add, and the agents' suggestions you
+accept. Each gets an agent of its own, started by Atrium, in a new worktree on branch `todo/<id>` (in a
+git project): it does the TODO, commits, and checks it off, or reports that it needs you. The harness,
+model and effort are read when the agent starts. The board's *Auto* switch, next to the TODO heading,
+turns them on or off for that project; turned on, it is for the open TODOs you had already too. With it
+off, ▶ on a TODO starts its agent.
+
+| Key | Default | |
+|---|---|---|
+| `todo_agent.auto` | `true` | Start an agent for each TODO that gets into your list. TODOs you had before Atrium did this wait for ▶ (or for the switch to be turned on). The board's switch wins. |
+| `todo_agent.chats` | `false` | In chats (home page → New chat) too. `false`: there only when the board's switch is on, or with ▶. |
+| `todo_agent.harness` | `""` | `""` = `defaults.harness`. |
+| `todo_agent.model`, `todo_agent.effort` | `""` | `""` = `harnesses.<harness>.model` / `effort`. |
+| `todo_agent.delay_seconds` | `30` | How long after a TODO gets into your list its agent starts: time to take it back. |
+| `todo_agent.max_concurrent` | `2` | TODO agents at work at once; the other TODOs wait their turn, oldest first. ▶ doesn't wait. |
+| `todo_agent.merge` | `true` | The agent brings its branch into the one the project directory has checked out, fast-forward only (rebasing first if that branch moved on); when git refuses, it stops and tells you why. Nothing is pushed, built or restarted. `false`: it leaves its commits on `todo/<id>` for you to merge. |
+| `todo_agent.archive_after_days` | `3` | A TODO agent idle this long is archived; its worktree goes with it if it is clean and merged. `0`: never. |
 
 ### Web tools and MCP servers
 

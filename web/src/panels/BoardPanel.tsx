@@ -87,7 +87,7 @@ export function BoardPanel() {
 
   useEffect(() => {
     // the board's TODO list asks for its changes: it can't call the API itself (its sandbox has no login)
-    const todo = async (m: { action?: string; id?: string; text?: string }) => {
+    const todo = async (m: { action?: string; id?: string; text?: string; on?: boolean }) => {
       if (!pid) return;
       const id = String(m.id ?? "");
       try {
@@ -95,6 +95,8 @@ export function BoardPanel() {
         else if (m.action === "done" || m.action === "reopen") await api.updateTodo(pid, id, { done: m.action === "done" });
         else if (m.action === "accept") await api.updateTodo(pid, id, { accept: true });
         else if (m.action === "remove") await api.deleteTodo(pid, id);
+        else if (m.action === "run") await api.runTodo(pid, id);
+        else if (m.action === "auto") await api.setTodoAuto(pid, !!m.on);
       } catch (e) {
         toast(e instanceof Error ? e.message : String(e), "error");
         setRepush((n) => n + 1); // the board shows the TODO as it is again, not greyed out waiting

@@ -245,6 +245,7 @@ export interface SessionRow {
   subagents: SubagentRow[]; // oldest first, nested ones included
   compactions: CompactionRow[]; // oldest first; the chat shows the conversation since the last
   forked_from: { session: string; name: string | null; exists: boolean } | null;
+  todo: string | null; // the board TODO Atrium started it for: the rail puts it in a section of its own
 }
 
 /** An agent on the home page: what its status dot, line and avatar need from its session row. */
@@ -812,6 +813,10 @@ export const api = {
   updateTodo: (pid: string, tid: string, change: { done?: boolean; accept?: boolean; text?: string }) =>
     req("PATCH", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}`, change),
   deleteTodo: (pid: string, tid: string) => req("DELETE", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}`),
+  /** An agent does the TODO now: its own carries on, else a new one starts (the board's ▶ / ↻). */
+  runTodo: (pid: string, tid: string) => req("POST", `/api/p/${pid}/board/todos/${encodeURIComponent(tid)}/run`),
+  /** Agents do the human's TODOs in this project (null: as the settings say). */
+  setTodoAuto: (pid: string, auto: boolean | null): Promise<{ auto: boolean }> => req("POST", `/api/p/${pid}/board/todo-auto`, { auto }),
   tracker: (pid: string) => req<TrackerStatus>("GET", `/api/p/${pid}/tracker`),
   runTracker: (pid: string) => req("POST", `/api/p/${pid}/tracker/run`),
 

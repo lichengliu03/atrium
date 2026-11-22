@@ -3,7 +3,7 @@
     .atrium/
       .gitignore        "*" — keeps Atrium state out of the user's repo
       board.html        the fixed, self-contained board file (generated)
-      board.json        board source of truth
+      board.json        board source of truth (the TODOs' agents too: todo_agent.py)
       agents.json       session → agent name / role / harness
       reviews.json      per-session file review marks
       code_review.json  the Code Review Agent: review sessions, rounds and findings per agent
@@ -57,6 +57,7 @@ class Project:
         self.board = BoardStore(self)
         self.tracker: Any = None  # set by ProjectManager
         self.review: Any = None  # the ReviewManager, set by ProjectManager
+        self.todo_agent: Any = None  # the TodoAgent, set by ProjectManager
         self.deleted: set[str] = set()  # sessions deleted while running: late board writes are dropped
 
     def _ensure_state_dir(self) -> None:

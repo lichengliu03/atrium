@@ -83,6 +83,22 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "delay_seconds": 15,  # after the turn ends; skipped if the agent is busy again by then
         "max_concurrent": 2,  # automatic reviews running at once (the Review button doesn't wait)
     },
+    # TODO agents: the board's TODOs that are the human's (their own, or a suggestion they accepted) are done by an agent
+    # each, started by Atrium in a worktree of its own (in a git project). merge: it commits and fast-forwards the
+    # project directory's branch to its work, else leaves it there for the human. auto: in every project (the board's
+    # switch wins); a TODO's ▶ starts one any time. Their agents sit in a rail section of their own, archived once idle
+    # for archive_after_days (0: never).
+    "todo_agent": {
+        "auto": True,
+        "chats": False,  # in chats (home page → New chat) too
+        "harness": "",  # "" = defaults.harness
+        "model": "",
+        "effort": "",
+        "delay_seconds": 30,  # after a TODO is added or accepted: time to take it back
+        "max_concurrent": 2,  # TODO agents at work at once; the rest wait their turn (▶ doesn't wait)
+        "merge": True,
+        "archive_after_days": 3,
+    },
     # Atrium's web tools (exposed to every agent as web.search / web.fetch)
     "web": {
         "serper_api_key": "",  # env SERPER_API_KEY wins

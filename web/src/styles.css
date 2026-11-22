@@ -204,6 +204,10 @@ a { color: var(--accent-strong); }
 /* something typed on the new-agent page is waiting there */
 .rail-new .draft-dot { position: absolute; top: 4px; right: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); border: 2px solid var(--sidebar); }
 .rail-sep { width: 20px; height: 1px; background: var(--border); margin: 4px 0; flex: none; }
+/* the agents doing the board's TODOs (todo_agent.py): a tray of their own under the others, headed by a button to the
+   board. A border, not a fill: the avatars' rings and dots cut out of the rail's own colour */
+.rail-todo { flex: none; width: 44px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding-bottom: 7px; border: 1px solid var(--border); border-radius: 22px; }
+.rail-group { width: 100%; height: 28px; border-radius: 21px 21px 8px 8px; color: var(--faint); }
 /* full rail width + vertical padding: the scroll box clips, and the selection ring / badges sit outside the avatar */
 .rail-agents { flex: 0 1 auto; min-height: 0; align-self: stretch; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 7px 0; scrollbar-width: none; }
 .rail-agents::-webkit-scrollbar { display: none; }

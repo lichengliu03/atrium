@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
+from ..config import config
 from ..events import hub
 from .template import is_suggestion, render_board
 
@@ -28,9 +30,11 @@ def _empty() -> dict[str, Any]:
         "agents": {},
         "timeline": [],
         # source human: the human's own (added on the board, or by an agent they asked to); agent: suggested by
-        # an agent, until the human accepts it into their list
+        # an agent, until the human accepts it into their list. worker: the agent Atrium started for it (todo_agent.py)
         "todos": [],
         "todo_seq": 0,
+        "todo_auto": None,  # agents do the human's TODOs here: the board's switch; None = todo_agent.auto
+        "todo_auto_since": 0,  # … those that got into their list from then on (template.due_for_agent)
     }
 
 
@@ -40,10 +44,14 @@ class BoardStore:
         self.json_path = project.state_dir / "board.json"
         self.html_path = project.state_dir / "board.html"
         self._lock = threading.RLock()
+        self.on_todo: Callable[[], None] | None = None  # a TODO was added, changed or removed (not its worker)
+        self.removed_todos: set[str] = set()  # deleted since Atrium started (not the done ones dropped as too many)
         try:
             self.state = json.loads(self.json_path.read_text())
         except (OSError, json.JSONDecodeError):
             self.state = _empty()
+        if "todo_auto_since" not in self.state and self.state.get("todos"):  # TODOs from before agents did them: on ▶ only
+            self.state["todo_auto_since"] = time.time()
         for k, v in _empty().items():
             self.state.setdefault(k, v)
         if not self.json_path.exists():
@@ -75,13 +83,24 @@ class BoardStore:
         with self._lock:
             return copy.deepcopy(self.state["todos"])
 
+    def todo_auto(self) -> bool:
+        """Whether agents do the human's TODOs here: the board's switch, else ``todo_agent.auto`` (in a chat, and
+        ``todo_agent.chats``)."""
+        own = self.state.get("todo_auto")
+        if own is not None:
+            return bool(own)
+        return bool(config.get("todo_agent.auto")) and (not self.project.chat or bool(config.get("todo_agent.chats")))
+
+    def todo_auto_since(self) -> float:
+        return self.state.get("todo_auto_since") or 0
+
     # ---- write -------------------------------------------------------------
     def _write(self) -> None:
         self.json_path.write_text(json.dumps(self.state, indent=1, ensure_ascii=False))
         self._write_html()
 
     def _write_html(self) -> None:
-        html = render_board(self.state, self.project.name, self.project.path)
+        html = render_board(self.state, self.project.name, self.project.path, todo_auto=self.todo_auto())
         tmp = self.html_path.with_suffix(".html.tmp")
         tmp.write_text(html)
         tmp.replace(self.html_path)
@@ -202,7 +221,9 @@ class BoardStore:
                  "session_id": sid, "agent": name or "", "accepted": False, "done": False, "done_by": "", "created_at": now, "updated_at": now}
             todos.append(t)
             self._commit("todo", sid)
-            return copy.deepcopy(t)
+            out = copy.deepcopy(t)
+        self._todo_changed()
+        return out
 
     def update_todo(self, tid: str, *, done: bool | None = None, accept: bool | None = None, text: str | None = None,
                     by: str = "") -> dict[str, Any] | None:
@@ -215,6 +236,8 @@ class BoardStore:
             if text is not None and " ".join(text.split()):
                 t["text"] = " ".join(text.split())[:300]
             if accept is not None and t["source"] == "agent":
+                if accept and not t["accepted"]:
+                    t["accepted_at"] = time.time()  # in the human's list from then on: when its agent may start
                 t["accepted"] = accept
             if done is not None and done != t["done"]:
                 t["done"], t["done_by"], t["done_at"] = done, by if done else "", time.time()
@@ -224,7 +247,9 @@ class BoardStore:
                     self.state["todos"] = [x for x in self.state["todos"] if x["id"] not in drop]
             t["updated_at"] = time.time()
             self._commit("todo")
-            return copy.deepcopy(t)
+            out = copy.deepcopy(t)
+        self._todo_changed()
+        return out
 
     def remove_todo(self, tid: str) -> bool:
         with self._lock:
@@ -232,8 +257,37 @@ class BoardStore:
             self.state["todos"] = [t for t in self.state["todos"] if t["id"] != tid]
             if len(self.state["todos"]) == before:
                 return False
+            self.removed_todos.add(tid)
             self._commit("todo")
-            return True
+        self._todo_changed()
+        return True
+
+    def set_todo_worker(self, tid: str, worker: dict[str, Any], quiet: bool = False) -> dict[str, Any] | None:
+        """The agent doing a TODO, and where it stands (``todo_agent.py``). None if there is no such TODO."""
+        with self._lock:
+            t = next((t for t in self.state["todos"] if t["id"] == tid), None)
+            if t is None:
+                return None
+            t["worker"] = {k: v for k, v in worker.items() if v is not None}
+            if not quiet:
+                self._commit("todo")
+            return copy.deepcopy(t)
+
+    def set_todo_auto(self, on: bool | None) -> None:
+        """The board's switch. Turned on, it is for every open TODO of the human's, older ones too."""
+        with self._lock:
+            self.state["todo_auto"] = None if on is None else bool(on)
+            if on:
+                self.state["todo_auto_since"] = 0
+            self._commit("todo")
+        self._todo_changed()
+
+    def _todo_changed(self) -> None:
+        if self.on_todo:
+            try:
+                self.on_todo()
+            except Exception:
+                logging.getLogger("atrium.board").exception("TODO hook failed")
 
     def rename_agent(self, sid: str, name: str) -> None:
         with self._lock:

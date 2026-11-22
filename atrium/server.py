@@ -34,6 +34,7 @@ from .project import Project, ProjectNotFound, projects
 from .review import ReviewManager
 from .sessions import WorkspaceGone, attachment_from_upload, sessions
 from .terminal import TerminalError, terminals
+from .todo_agent import TodoAgent
 from .tracker import Tracker
 from .watch import ProjectWatcher, transcript_watcher
 
@@ -54,6 +55,8 @@ def _on_project_loaded(project: Project) -> None:
     project.tracker = Tracker(project, sessions)
     project.tracker.start()
     project.review = ReviewManager(project, sessions)
+    project.todo_agent = TodoAgent(project, sessions)
+    project.todo_agent.start()
     w = ProjectWatcher(project)
     w.start()
     _watchers[project.id] = w
@@ -74,6 +77,7 @@ async def lifespan(_app: FastAPI):
     projects.on_create.append(_on_project_loaded)
     sessions.on_turn_end.append(lambda project, _sid: project.tracker and project.tracker.after_turn())
     sessions.on_turn_end.append(lambda project, sid: project.review and project.review.turn_ended(sid))
+    sessions.on_turn_end.append(lambda project, sid: project.todo_agent and project.todo_agent.turn_ended(sid))
     sessions.start_background()
     transcript_watcher.start()
     await _sweep_chats()
@@ -87,6 +91,8 @@ async def lifespan(_app: FastAPI):
     for p in projects.loaded():
         if p.tracker:
             p.tracker.stop()
+        if p.todo_agent:
+            p.todo_agent.stop()
     for w in _watchers.values():
         w.stop()
     transcript_watcher.stop()
@@ -422,6 +428,8 @@ async def _forget(pid: str) -> None:
     p = projects.forget(pid)
     if p and p.tracker:
         p.tracker.stop()
+    if p and p.todo_agent:
+        p.todo_agent.stop()
     w = _watchers.pop(pid, None)
     if w:
         w.stop()
@@ -588,6 +596,7 @@ async def delete_session(pid: str, sid: str):
     except (NotImplementedError, ValueError) as e:
         raise HTTPException(400, str(e))
     await p.review.forget(sid)  # its review session goes with it
+    p.todo_agent.forget(sid)  # its TODO, if it had one, waits for another
     return {"ok": True, "backup": backup}
 
 
@@ -924,6 +933,26 @@ async def update_todo(pid: str, tid: str, body: dict[str, Any] = Body(...)):
 @app.delete("/api/p/{pid}/board/todos/{tid}")
 async def delete_todo(pid: str, tid: str):
     return {"ok": P(pid).board.remove_todo(tid)}
+
+
+@app.post("/api/p/{pid}/board/todos/{tid}/run")
+async def run_todo(pid: str, tid: str):
+    """An agent does the TODO now: its own carries on, else a new one starts on it (the board's ▶ / ↻)."""
+    try:
+        return await P(pid).todo_agent.run(tid)
+    except KeyError:
+        raise HTTPException(404, "no such TODO")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/p/{pid}/board/todo-auto")
+async def todo_auto(pid: str, body: dict[str, Any] = Body(...)):
+    """Agents do the human's TODOs here: true / false, or null for the setting's default."""
+    p = P(pid)
+    on = body.get("auto")
+    p.board.set_todo_auto(None if on is None else bool(on))
+    return {"auto": p.board.todo_auto()}
 
 
 @app.get("/api/p/{pid}/tracker")

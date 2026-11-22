@@ -36,6 +36,7 @@ class Session(Protocol):
     cwd: str
     name: str
     items: list[Item]
+    reported: str | None
 
 
 class Notifier:
@@ -58,10 +59,12 @@ class Notifier:
 
     def turn_ended(self, h: Session, item: Item) -> None:
         # goal_active: Codex goes on to the goal's next turn by itself; the turn that ends the goal is the news
-        if item.get("terminal_reason") in INTERRUPTED or item.get("goal_active") or not self._due(h, "turn_end"):
+        if item.get("terminal_reason") in INTERRUPTED or item.get("goal_active") or _todo_done(h, item) or not self._due(h, "turn_end"):
             return
         if item.get("is_error"):
             self._send(h, f"{_agent(h)} stopped with an error", item.get("text") or _last_text(h) or "The turn failed")
+        elif (h.project.session_meta(h.sid).get("todo") or {}).get("id"):  # its TODO isn't done (_todo_done): it needs the human
+            self._send(h, f"{_agent(h)} needs you", _last_text(h) or "It left its TODO open")
         else:
             self._send(h, f"{_agent(h)} finished", _last_text(h) or "Turn complete")
 
@@ -126,6 +129,15 @@ async def _run(cmd: list[str]) -> None:
         return
     if proc.returncode:
         log.warning("desktop notification failed (%s): %s", cmd[0], err.decode(errors="replace").strip())
+
+
+def _todo_done(h: Session, item: Item) -> bool:
+    """The agent of a board TODO (todo_agent.py) got it done: the board says so. One that needs the human tells them."""
+    tid = (h.project.session_meta(h.sid).get("todo") or {}).get("id")
+    if not tid or item.get("is_error"):
+        return False
+    t = next((t for t in h.project.board.todos() if t["id"] == tid), None)
+    return bool(t and t.get("done")) or h.reported == "done"
 
 
 def _agent(h: Session) -> str:

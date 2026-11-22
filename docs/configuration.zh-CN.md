@@ -83,6 +83,7 @@ Atrium 只有一个属于自己的配置文件：`~/.atrium/settings.json`。其
   "tracker": {"enabled": true, "chats": false, "harness": "claude-code", "model": "", "effort": "low", "interval_seconds": 300, "after_turn_seconds": 45},
   "git_agent": {"harness": "claude-code", "model": ""},
   "review_agent": {"auto": true, "chats": false, "harness": "claude-code", "model": "", "effort": "", "language": "", "delay_seconds": 15, "max_concurrent": 2},
+  "todo_agent": {"auto": true, "chats": false, "harness": "", "model": "", "effort": "", "delay_seconds": 30, "max_concurrent": 2, "merge": true, "archive_after_days": 3},
   "web": {"serper_api_key": "", "jina_api_key": "", "replace_builtin_web_tools": true},
   "mcp_servers": {},
   "voice": {"base_url": "", "api_key": "", "asr_model": "", "refine_model": "", "refine_effort": "low"},
@@ -140,7 +141,7 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 
 通知怎么送到桌面（osascript、terminal-notifier、notify-send）见 [README](../README.md#where-things-live)。
 
-### Tracker、Git Agent 与 Code Review Agent
+### Tracker、Git Agent、Code Review Agent 与 TODO agent
 
 **Tracker Agent**（每个项目一个）负责更新看板（board）上的状态行、标题和时间线，并给新 agent 起名字。
 
@@ -173,6 +174,22 @@ Git Agent 和 Code Review Agent 有自己的模式，不受这些设置影响：
 | `review_agent.language` | `""` | 审查者用什么语言写；`""` = 跟你用的语言一样。 |
 | `review_agent.delay_seconds` | `15` | 一轮结束后多久开始审查；到时 agent 又忙起来就跳过。 |
 | `review_agent.max_concurrent` | `2` | 同时运行的自动审查数量上限。手动点 *Review* 不用排队。 |
+
+**TODO agent** 负责做看板上属于你的 TODO：你自己加的，以及你接受了的 agent 建议。Atrium 给每条 TODO
+单独启动一个 agent。在 git 项目里，它在新的 worktree（分支 `todo/<id>`）里做这条 TODO、提交，然后勾掉
+TODO；需要你处理时，它会报告等你。harness、模型和 effort 在 agent 启动时读取。看板上 TODO 标题旁的
+*Auto* 开关按项目打开或关闭；打开时，你之前已有的未完成 TODO 也会开始做。关闭时，点 TODO 上的 ▶ 启动它的 agent。
+
+| Key | 默认值 | 说明 |
+|---|---|---|
+| `todo_agent.auto` | `true` | 每条进入你列表的 TODO 都启动一个 agent。这个功能出现之前就有的 TODO 等你点 ▶（或打开开关）。以看板上的开关为准。 |
+| `todo_agent.chats` | `false` | 在 chat（主页 → New chat）里也自动做。`false`：chat 里只在看板开关打开时，或点 ▶ 时才做。 |
+| `todo_agent.harness` | `""` | `""` = `defaults.harness`。 |
+| `todo_agent.model`、`todo_agent.effort` | `""` | `""` = `harnesses.<harness>.model` / `effort`。 |
+| `todo_agent.delay_seconds` | `30` | TODO 进入你的列表后多久启动它的 agent：留时间给你撤回。 |
+| `todo_agent.max_concurrent` | `2` | 同时在做的 TODO agent 上限；其余 TODO 按先来后到排队。点 ▶ 不用排队。 |
+| `todo_agent.merge` | `true` | agent 把自己的分支合进项目目录当前检出的分支，只做 fast-forward（那个分支有新提交时先 rebase）；git 拒绝时它会停下来告诉你原因。不会 push、build 或重启任何东西。`false`：提交留在 `todo/<id>` 上，由你来合并。 |
+| `todo_agent.archive_after_days` | `3` | TODO agent 闲置这么久后自动归档；它的 worktree 如果干净且已合并，会一起删掉。`0`：从不归档。 |
 
 ### Web 工具与 MCP 服务器
 

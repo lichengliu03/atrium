@@ -1,5 +1,6 @@
 // The rail on the far right: home, new agent, one avatar per agent (status at a glance,
-// details on hover), the full agent list as a flyout, the system agents, settings.
+// details on hover) — those doing the board's TODOs in a section of their own —, the full agent
+// list as a flyout, the system agents, settings.
 import type { ReactNode } from "react";
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -7,7 +8,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { LucideIcon } from "lucide-react";
 import {
   Anchor, Archive, ArchiveRestore, Atom, Bird, Bug, Cat, Cherry, Citrus, Clover, Compass, Cookie, Dog, Feather, Fish, Flame, Flower2, Gem,
-  Ghost, GitBranch, House, LayoutList, Leaf, LogOut, Menu, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
+  Ghost, GitBranch, House, LayoutList, Leaf, ListTodo, LogOut, Menu, Monitor, Moon, Mountain, Orbit, Origami, Rabbit, Rocket, Sailboat, Search, Settings, Shell,
   Snail, Snowflake, Sprout, SquarePen, Squirrel, Star, Sun, Telescope, Trash2, Turtle, Workflow, X,
 } from "lucide-react";
 import { api, SessionRow } from "../api";
@@ -68,12 +69,20 @@ function hash(key: string): number {
   return h >>> 0;
 }
 
+type Dated = Pick<SessionRow, "id" | "created_at" | "updated_at"> & { archived?: boolean };
+
+/** Creation order, archived ones last: how the rail and its flyout list agents, so that each keeps its place while
+ *  agents work (the server lists the most recently active first) and a new one joins at the end. */
+function byCreation(a: Dated, b: Dated): number {
+  return Number(!!a.archived) - Number(!!b.archived) || (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id);
+}
+
 /** Glyph per agent (a project's workers): preferred by id, else the next free one, assigned in creation order so
  *  agents keep theirs. Archived ones go last, so showing them doesn't change the others'. */
-export function glyphsFor(workers: (Pick<SessionRow, "id" | "created_at" | "updated_at"> & { archived?: boolean })[]): Map<string, LucideIcon> {
+export function glyphsFor(workers: Dated[]): Map<string, LucideIcon> {
   const out = new Map<string, LucideIcon>();
   const used = new Set<number>();
-  const ordered = [...workers].sort((a, b) => Number(!!a.archived) - Number(!!b.archived) || (a.created_at ?? a.updated_at) - (b.created_at ?? b.updated_at) || a.id.localeCompare(b.id));
+  const ordered = [...workers].sort(byCreation);
   for (const s of ordered) {
     let i = hash(s.id) % GLYPHS.length;
     for (let n = 0; n < GLYPHS.length && used.has(i); n++) i = (i + 1) % GLYPHS.length;
@@ -230,8 +239,9 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
       (s) => s.role === "worker" && (!f || displayName(s).toLowerCase().includes(f) || (s.first_prompt || "").toLowerCase().includes(f) || (s.branch || "").toLowerCase().includes(f)),
     );
   }, [sessions, filter]);
-  const active = workers.filter((s) => !s.archived && isActive(s));
-  const rest = workers.filter((s) => !s.archived && !isActive(s));
+  const active = workers.filter((s) => !s.archived && !s.todo && isActive(s));
+  const rest = workers.filter((s) => !s.archived && !s.todo && !isActive(s));
+  const todos = workers.filter((s) => !s.archived && s.todo).sort(byCreation); // started for the board's TODOs: apart, in the order they came
   const archived = workers.filter((s) => s.archived);
   const item = (s: SessionRow) => (
     <div key={s.id} className={clsx("sb-row", s.id === sessionId && "active")}>
@@ -295,6 +305,8 @@ function AgentsFlyout({ onClose }: { onClose: () => void }) {
         {active.map(item)}
         {rest.length > 0 && <div className="sb-title">{active.length ? "Others" : "All"}</div>}
         {rest.map(item)}
+        {todos.length > 0 && <div className="sb-title">TODO agents</div>}
+        {todos.map(item)}
         {archived.length > 0 && <div className="sb-title">Archived</div>}
         {archived.map(item)}
         {workers.length === 0 && <div className="faint" style={{ padding: "8px 12px", fontSize: 12.5 }}>{filter ? "No match." : "No sessions in this directory yet."}</div>}
@@ -319,13 +331,15 @@ export const Rail = memo(function Rail() {
   const [collapsed, setCollapsed] = useState(false); // the selected agent's subagents open under it, unless clicked shut
   const glyphs = useGlyphs();
   const workers = useMemo(() => {
-    const w = sessions.filter((s) => s.role === "worker" && !s.archived);
+    const w = sessions.filter((s) => s.role === "worker" && !s.archived && !s.todo);
     return [...w.filter(isActive), ...w.filter((s) => !isActive(s))];
   }, [sessions]);
+  // the agents Atrium started for the board's TODOs: a section of their own under the others, each where it came
+  const todoAgents = useMemo(() => sessions.filter((s) => s.role === "worker" && !s.archived && s.todo).sort(byCreation), [sessions]);
   const childOpen = !!subagentId || !!compactionId; // a subagent or compacted history in the chat column, not the agent's chat
   useEffect(() => setCollapsed(false), [sessionId, subagentId, compactionId]);
   // subagent progress rarely triggers a session event (and can only be guessed for CLI sessions): poll meanwhile
-  useInterval(() => void refreshSessions(), workers.some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
+  useInterval(() => void refreshSessions(), [...workers, ...todoAgents].some((s) => s.subagents?.some((a) => a.status === "running")) ? 4000 : null);
   // the open agent's own chat on screen: a click folds what opened under it. Not on screen (a panel on one screen, the
   // chat column hidden): the click goes back to it, which also closes the rail's drawer
   const chatShown = layout === "single" ? pane === "chat" : chatOpen;
@@ -344,6 +358,38 @@ export const Rail = memo(function Rail() {
   });
   const click = (fn: () => void) => () => (setTip(null), fn());
   const ThemeIcon = theme === "dark" ? Moon : theme === "light" ? Sun : Monitor;
+  const agent = (s: SessionRow) => {
+    const sc = statusClass(s);
+    const subs = s.subagents ?? [];
+    const kids = subs.length + (s.compactions?.length ?? 0);
+    const open = s.id === sessionId && !collapsed && kids > 0;
+    return (
+      <Fragment key={s.id}>
+        <button
+          className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
+          onClick={click(() => pickAgent(s, kids))}
+          aria-expanded={kids ? open : undefined}
+          {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
+        >
+          <AgentAvatar s={s} glyph={glyphs.get(s.id)} size={compact ? 26 : 32} />
+          {sc && <span className={clsx("st dot", sc)} />}
+          {s.pending > 0 && <span className="pend">{s.pending}</span>}
+          {kids > 0 && !open && (
+            <span className={clsx("subs-n", subs.some((a) => a.status === "running") && "on")}>{kids}</span>
+          )}
+        </button>
+        {kids > 0 && (
+          <RailSubagents
+            parent={s}
+            open={open}
+            hover={hoverProps}
+            onPick={(a) => (setTip(null), selectSubagent(s.id, a.id))}
+            onPickCompaction={(c) => (setTip(null), selectCompaction(s.id, c.id))}
+          />
+        )}
+      </Fragment>
+    );
+  };
 
   return (
     <nav className="rail">
@@ -364,38 +410,21 @@ export const Rail = memo(function Rail() {
           </button>
           <div className="rail-sep" />
           <div className="rail-agents">
-            {workers.map((s) => {
-              const sc = statusClass(s);
-              const subs = s.subagents ?? [];
-              const kids = subs.length + (s.compactions?.length ?? 0);
-              const open = s.id === sessionId && !collapsed && kids > 0;
-              return (
-                <Fragment key={s.id}>
-                  <button
-                    className={clsx("rail-agent", s.id === sessionId && !childOpen && "on", s.id === sessionId && childOpen && "parent-on")}
-                    onClick={click(() => pickAgent(s, kids))}
-                    aria-expanded={kids ? open : undefined}
-                    {...hoverProps(<AgentTip s={s} glyph={glyphs.get(s.id)} />)}
-                  >
-                    <AgentAvatar s={s} glyph={glyphs.get(s.id)} size={compact ? 26 : 32} />
-                    {sc && <span className={clsx("st dot", sc)} />}
-                    {s.pending > 0 && <span className="pend">{s.pending}</span>}
-                    {kids > 0 && !open && (
-                      <span className={clsx("subs-n", subs.some((a) => a.status === "running") && "on")}>{kids}</span>
-                    )}
-                  </button>
-                  {kids > 0 && (
-                    <RailSubagents
-                      parent={s}
-                      open={open}
-                      hover={hoverProps}
-                      onPick={(a) => (setTip(null), selectSubagent(s.id, a.id))}
-                      onPickCompaction={(c) => (setTip(null), selectCompaction(s.id, c.id))}
-                    />
-                  )}
-                </Fragment>
-              );
-            })}
+            {workers.map(agent)}
+            {todoAgents.length > 0 && (
+              <div className="rail-todo">
+                <button
+                  className="rail-btn rail-group"
+                  onClick={click(() => setPanel("board"))}
+                  aria-label="TODO agents"
+                  data-tip="TODO agents — doing your TODOs. Open the board"
+                  data-tip-side="left"
+                >
+                  <ListTodo size={15} />
+                </button>
+                {todoAgents.map(agent)}
+              </div>
+            )}
           </div>
           <button className={clsx("rail-btn rail-flyout-toggle", flyout && "on")} onClick={() => setFlyout((o) => !o)} aria-label="All agents" data-tip="All agents" data-tip-side="left">
             <LayoutList size={16} />
