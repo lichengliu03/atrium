@@ -359,7 +359,7 @@ function sameBlock(p: BlockProps, n: BlockProps): boolean {
       return p.running === n.running || b.tools.every((t) => n.results[t.id]); // a call still waiting spins while the turn runs
     }
     case "board":
-      return (a as typeof b).tool === b.tool;
+      return (a as typeof b).tool === b.tool && p.results[b.tool.id] === n.results[b.tool.id];
     case "review":
       return (a as typeof b).tool === b.tool && (a as typeof b).latest === b.latest && p.results[b.tool.id] === n.results[b.tool.id];
     case "item": {
@@ -389,7 +389,7 @@ const BlockView = memo(function BlockView({ b, results, running, cwd, shown, onT
         <MsgTime ts={b.tools[0].ts} />
       </div>
     );
-  if (b.type === "board") return <BoardToolRow tool={b.tool} />;
+  if (b.type === "board") return <BoardToolRow tool={b.tool} result={results[b.tool.id]} />;
   if (b.type === "review") return <ReviewToolBlock tool={b.tool} result={results[b.tool.id]} latest={b.latest} />;
   const it = b.item;
   switch (it.kind) {

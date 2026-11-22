@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, ExternalLink, FileCode2, History, LayoutDashboard, RefreshCw, RotateCw } from "lucide-react";
 import { api, BoardPage, ProjectInfo, TrackerStatus } from "../api";
-import { resolvedTheme, useApp, useAppState } from "../store";
+import { resolvedTheme, useApp, useAppState, type BoardTarget } from "../store";
 import { basename, clsx, fmtDuration, timeAgo } from "../util";
 import { Popover, Spinner, usePanelShown, useTick } from "../components/ui";
 
@@ -12,8 +12,9 @@ const dirOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/"))
 
 export function BoardPanel() {
   useTick(15000);
-  const { project, boardVersion, trackerVersion, theme, selectSession, toast, fsVersion } = useAppState("project", "boardVersion", "trackerVersion", "theme", "selectSession", "toast", "fsVersion");
+  const { project, boardVersion, trackerVersion, theme, selectSession, toast, fsVersion, boardRequest } = useAppState("project", "boardVersion", "trackerVersion", "theme", "selectSession", "toast", "fsVersion", "boardRequest");
   const frame = useRef<HTMLIFrameElement>(null);
+  const target = useRef<BoardTarget | null>(null); // where the next push scrolls the board to
   const [loaded, setLoaded] = useState(false);
   const [tracker, setTracker] = useState<TrackerStatus | null>(null);
   const [repush, setRepush] = useState(0);
@@ -50,18 +51,30 @@ export function BoardPanel() {
     if (useApp.getState().fsPaths.some((p) => dirOf(p) === dir)) setReload((n) => n + 1);
   }, [fsVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // push fresh board HTML into the iframe (it swaps content in place, keeping scroll); behind another panel it waits
-  // to be shown, and gets the board as it is then
+  // "View on board" in the chat: the board, not a page over it, pushed again with what to scroll to
   useEffect(() => {
-    if (!pid || !loaded || !shown) return;
+    if (!boardRequest) return;
+    target.current = boardRequest;
+    setPage(null);
+  }, [boardRequest]);
+
+  // push fresh board HTML into the iframe (it swaps content in place, keeping scroll); behind another panel or under a
+  // page it waits to be shown, and gets the board as it is then. A target goes with it: what isn't on that board isn't
+  // there at all
+  useEffect(() => {
+    if (!pid || !loaded || !shown || page) return;
     let alive = true;
     fetch(api.boardHtmlUrl(pid), { cache: "no-store" })
       .then((r) => r.text())
-      .then((html) => alive && frame.current?.contentWindow?.postMessage({ type: "atrium:board-html", html }, "*"));
+      .then((html) => {
+        if (!alive) return;
+        frame.current?.contentWindow?.postMessage({ type: "atrium:board-html", html, focus: target.current }, "*");
+        target.current = null;
+      });
     return () => {
       alive = false;
     };
-  }, [pid, boardVersion, loaded, repush, shown]);
+  }, [pid, boardVersion, loaded, repush, shown, boardRequest, page]);
 
   useEffect(() => {
     frame.current?.contentWindow?.postMessage({ type: "atrium:theme", theme: resolvedTheme() }, "*");
@@ -91,6 +104,7 @@ export function BoardPanel() {
       if (e.source !== frame.current?.contentWindow) return;
       if (e.data?.type === "atrium:open-session" && e.data.sessionId) selectSession(e.data.sessionId);
       if (e.data?.type === "atrium:todo") void todo(e.data);
+      if (e.data?.type === "atrium:not-on-board") toast(`That ${e.data.todo ? "TODO" : "card"} isn't on the board any more`, "info");
     };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);

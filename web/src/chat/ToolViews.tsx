@@ -357,8 +357,21 @@ export const ToolRow = memo(function ToolRow({ tool, result, cwd, running, at, o
   a.onForkStep === b.onForkStep && samePoint(a.at, b.at),
 );
 
-export function BoardToolRow({ tool }: { tool: ToolItem }) {
-  const setPanel = useApp((s) => s.setPanel);
+/** The agent whose chat is open (a subagent's and a compaction's views are its parent's), then the one it was forked
+ *  from, and so on: a call from before a fork published its card under the original. */
+function lineage(): string[] {
+  const { sessionId, sessions } = useApp.getState();
+  const out: string[] = [];
+  let id = sessionId;
+  while (id && !out.includes(id)) {
+    out.push(id);
+    id = sessions.find((r) => r.id === id)?.forked_from?.session ?? null;
+  }
+  return out;
+}
+
+export function BoardToolRow({ tool, result }: { tool: ToolItem; result?: ResultItem }) {
+  const showOnBoard = useApp((s) => s.showOnBoard);
   const inp = tool.input || {};
   // mcp__board__status (current) or mcp__atrium_board__board_status (older transcripts)
   const short = tool.name.replace(/^mcp__(atrium_)?board__(board_)?/, "");
@@ -369,6 +382,13 @@ export function BoardToolRow({ tool }: { tool: ToolItem }) {
   else if (short === "todo_add") text = `${inp.requested ? "TODO" : "Suggested a TODO"}: ${inp.text}`;
   else if (short === "todo_done") text = `Checked off TODO ${inp.id}${inp.note ? ` — ${inp.note}` : ""}`;
   else if (short === "read") text = "Checked the board";
+  // the card it published, or the TODO it added: by the id its result names ("TODO t12 is on the board…"), else its text
+  const view = () =>
+    showOnBoard(
+      short === "publish"
+        ? { card: inp.key || "main", sessions: lineage() }
+        : { todo: /\bTODO (t\d+)\b/.exec(result?.content ?? "")?.[1] ?? null, text: String(inp.text ?? "") },
+    );
   return (
     <div className="board-tool">
       <span className="ico">
@@ -376,7 +396,7 @@ export function BoardToolRow({ tool }: { tool: ToolItem }) {
       </span>
       <span className="grow ellipsis">{text}</span>
       {(short === "publish" || short === "todo_add") && (
-        <button className="btn btn-sm btn-ghost" onClick={() => setPanel("board")}>
+        <button className="btn btn-sm btn-ghost" onClick={view}>
           View on board
         </button>
       )}

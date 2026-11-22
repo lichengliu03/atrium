@@ -20,6 +20,10 @@ export interface FileTarget {
   content?: string;
 }
 
+/** Where "View on board" in the chat goes: card `card` of the first of `sessions` that has one (the agent, then the
+ *  one it was forked from…), or a TODO, by its id when known, else by its text. */
+export type BoardTarget = { card: string; sessions: string[] } | { todo: string | null; text: string };
+
 /** The fork dialog: fork session `sid` from the latest point (`at` null), before a user message or after one of
  *  the agent's steps (`at.after`). */
 export interface ForkRequest {
@@ -58,6 +62,7 @@ interface AppState {
   forkRequest: ForkRequest | null;
   // cross-panel requests / change counters
   fileRequest: ({ root?: string; path: string; nonce: number } & FileTarget) | null;
+  boardRequest: (BoardTarget & { nonce: number }) | null;
   changesSession: string | null;
   boardVersion: number;
   trackerVersion: number;
@@ -94,6 +99,7 @@ interface AppState {
   setSettingsOpen: (v: boolean) => void;
   setForkRequest: (r: ForkRequest | null) => void;
   openFile: (path: string, root?: string, target?: FileTarget) => void;
+  showOnBoard: (target: BoardTarget) => void;
   reviewChanges: (sid: string | null) => void;
   toast: (text: string, kind?: Toast["kind"]) => void;
 }
@@ -166,6 +172,7 @@ export const useApp = create<AppState>((set, get) => {
     settingsOpen: false,
     forkRequest: null,
     fileRequest: null,
+    boardRequest: null,
     changesSession: null,
     boardVersion: 0,
     trackerVersion: 0,
@@ -244,7 +251,7 @@ export const useApp = create<AppState>((set, get) => {
         return true;
       }
       const project = await api.project(pid, opened);
-      set({ project, sessions: [], sessionId: null, subagentId: null, compactionId: null, changesSession: null, fileRequest: null, forkRequest: null });
+      set({ project, sessions: [], sessionId: null, subagentId: null, compactionId: null, changesSession: null, fileRequest: null, boardRequest: null, forkRequest: null });
       syncUrl(pid, null);
       const open = socket.subscribe(`open:${pid}`, () => undefined); // no events: tells the server this page has it open
       const events = socket.subscribe(`project:${pid}`, (msg) => {
@@ -380,6 +387,10 @@ export const useApp = create<AppState>((set, get) => {
     openFile: (path, root, target) => {
       set({ fileRequest: { path, root, ...target, nonce: Date.now() } });
       get().setPanel("files");
+    },
+    showOnBoard: (target) => {
+      set({ boardRequest: { ...target, nonce: Date.now() } });
+      get().setPanel("board");
     },
     reviewChanges: (sid) => {
       set({ changesSession: sid });

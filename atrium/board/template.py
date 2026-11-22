@@ -85,6 +85,9 @@ h2 .count{font:500 12px var(--sans);color:var(--muted);background:var(--bg2);bor
 .card-body>*:first-child{margin-top:0}.card-body>*:last-child{margin-bottom:0}
 .card-body h1,.card-body h2,.card-body h3,.card-body h4{font-family:var(--serif);font-weight:500;margin:1.1em 0 .45em;display:block}
 .card-body h1{font-size:21px}.card-body h2{font-size:18px}.card-body h3{font-size:15.5px}.card-body h4{font-size:14px}
+/* "View on board" in Atrium's chat: the card or TODO it points at lights up for a moment */
+@keyframes board-flash{0%,55%{box-shadow:0 0 0 2px var(--accent)}100%{box-shadow:0 0 0 2px transparent}}
+:is(.card,.todo).flash{animation:board-flash 2.4s ease-out}
 .timeline{list-style:none;margin:0;padding:0;border-left:2px solid var(--line);margin-left:6px}
 .timeline li{position:relative;padding:4px 0 10px 18px;font-size:13px;color:var(--text2)}
 .timeline li::before{content:"";position:absolute;left:-6px;top:10px;width:10px;height:10px;border-radius:50%;background:var(--panel);border:2px solid var(--line2)}
@@ -236,6 +239,24 @@ JS = r"""
     var el = e.target.closest('[data-session]'); if(!el || e.target.closest('a,summary,button')) return;
     if(embedded) window.parent.postMessage({type:'atrium:open-session', sessionId: el.getAttribute('data-session')}, '*');
   });
+  // "View on board" in Atrium's chat: a card (the first of these sessions' that has it: the agent, then the one it was
+  // forked from) or a TODO (by its id, else by its text), unfolded, scrolled to and lit up; the host hears when it isn't
+  // on the board (its agent archived, the TODO dismissed)
+  function words(s){ return String(s || '').split(/\s+/).filter(Boolean).join(' ').toLowerCase(); }
+  function focusOn(f){
+    var el = null, i;
+    if(f.card){
+      for(i = 0; i < (f.sessions || []).length && !el; i++) el = document.getElementById('card-' + f.sessions[i] + '-' + f.card);
+    } else {
+      var todos = [].slice.call(document.querySelectorAll('[data-todo]')), text = words(f.text).slice(0, 300);
+      el = todos.filter(function(li){ return f.todo && li.getAttribute('data-todo') === f.todo; })[0] ||
+        todos.filter(function(li){ var t = li.querySelector('.todo-text'); return text && t && words(t.textContent) === text; })[0] || null;
+    }
+    if(!el){ window.parent.postMessage({type:'atrium:not-on-board', todo: !f.card}, '*'); return; }
+    var fold = el.closest('details'); if(fold) fold.open = true;
+    window.scrollTo(0, Math.max(0, el.getBoundingClientRect().top + window.pageYOffset - 16));  // at once: lit when it is there
+    el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+  }
   // Embedded in Atrium: the host pushes fresh HTML and we swap the content in place (keeps scroll).
   window.addEventListener('message', function(e){
     var d = e.data || {};
@@ -243,10 +264,11 @@ JS = r"""
       var doc = new DOMParser().parseFromString(d.html, 'text/html');
       // From a newer Atrium than this page (the host pushes right after a restart): its stylesheet comes in too, or an
       // open board keeps the old layout, the Home Screen app's until it is closed. A new script can't come in that way:
-      // the page loads again, at the theme it shows.
+      // the page loads again, at the theme it shows, and with what it was to scroll to.
       var js = doc.getElementById('board-js'), css = doc.getElementById('board-css'), own = document.getElementById('board-css');
       if(js && js.textContent !== document.getElementById('board-js').textContent){
-        location.replace(location.pathname + '?theme=' + document.documentElement.getAttribute('data-theme'));
+        location.replace(location.pathname + '?theme=' + document.documentElement.getAttribute('data-theme') +
+          (d.focus ? '&focus=' + encodeURIComponent(JSON.stringify(d.focus)) : ''));
         return;
       }
       if(css && css.textContent !== own.textContent) own.textContent = css.textContent;
@@ -270,9 +292,13 @@ JS = r"""
       }
       remember(next);
       tick();
+      if(d.focus) focusOn(d.focus);
     }
     if(d.type === 'atrium:theme' && d.theme){ document.documentElement.setAttribute('data-theme', d.theme); }
   });
+  if(embedded && q.get('focus')){
+    window.addEventListener('load', function(){ try { focusOn(JSON.parse(q.get('focus'))); } catch(err){} });
+  }
   if(window.top === window){ setTimeout(function(){ location.reload(); }, 20000); }
 })();
 """
