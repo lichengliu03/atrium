@@ -91,6 +91,7 @@ class ReviewManager:
         self._timers: dict[str, asyncio.TimerHandle] = {}
         self._again: set[str] = set()  # agents that reported done again while their review ran
         self._starting: set[str] = set()  # agents whose round is gathering its materials
+        self._cancelled: set[str] = set()  # … and were archived meanwhile (put_away)
         data = self._load()  # rounds a previous Atrium process left queued or running died with it
         stale = [r for e in data.values() for r in (e.get("rounds") or [])[-1:] if _active(r)]
         for r in stale:
@@ -226,6 +227,8 @@ class ReviewManager:
             raise ValueError("only agents doing the work get reviewed")
         if not meta and not await self.sessions.find_summary(self.project, wsid):
             raise FileNotFoundError(f"no agent {wsid}")
+        if trigger == "auto" and meta.get("archived") and not self.sessions.handle(wsid):  # put away; one carried on since is reviewed
+            return {"skipped": "it is archived"}
         cwd, _hid = await self.sessions.session_info(self.project, wsid)
         if not os.path.isdir(cwd):  # its worktree was removed: reviewed again once it is moved
             if trigger == "auto":
@@ -272,6 +275,7 @@ class ReviewManager:
             raise
         finally:
             self._starting.discard(wsid)
+            self._cancelled.discard(wsid)
 
     async def _launch_inner(self, wsid: str, r: dict[str, Any]) -> dict[str, Any]:
         project = self.project
@@ -285,6 +289,10 @@ class ReviewManager:
             self._drop(wsid, r)
             return {"skipped": "no new changes"}
         intent = await self._intent(wsid, cwd, hid)
+        if wsid in self._cancelled:  # its agent was archived meanwhile: put_away waits for this
+            self._finish(wsid, r["n"], "stopped", error="its agent was archived")  # one that was queued (_pump) stays listed
+            self._pump()
+            return {"skipped": "its agent was archived"}
         sent = [f for f in (prev or {}).get("findings") or [] if f.get("status") == "sent"]
         r.update(state="running", started_at=time.time(), scope=mat["scope"], head=mat["head"], base=mat["base"],
                  files=[{k: f[k] for k in ("rel", "status", "added", "removed")} for f in mat["files"]])
@@ -488,6 +496,36 @@ class ReviewManager:
             data = self._load()
             self._entry(data, wsid)["outbox"] = box  # still waiting: the human can retry or cancel
             self._save(data, wsid)
+
+    async def put_away(self, wsid: str) -> None:
+        """The agent was archived (``SessionManager.set_archived``): its review stops — the round under way or
+        waiting its turn, and the next automatic one — and its reviewer is closed, so that nothing of it keeps the
+        agent's worktree busy."""
+        timer = self._timers.pop(wsid, None)
+        if timer:
+            timer.cancel()
+        self._again.discard(wsid)
+        if wsid in self._starting:  # gathering its materials: it gives up once it has them (_launch_inner)
+            self._cancelled.add(wsid)
+            for _ in range(600):
+                if wsid not in self._starting:
+                    break
+                await asyncio.sleep(0.05)
+        data = self._load()
+        e = data.get(wsid) or {}
+        rounds = e.get("rounds") or []
+        if rounds and _active(rounds[-1]):  # before the reviewer is closed: should that end its turn, no round is left to finish
+            rounds[-1].update(state="stopped", ended_at=time.time(), error="its agent was archived")
+            self._save(data, wsid)
+        rh = self.sessions.handle(e.get("session") or "")
+        if rh:
+            if rh.state in ("starting", "running", "waiting"):  # closed mid-turn, it would get 5 s to end the turn first
+                try:  # (as long as the harnesses' own close gives it: a reviewer stuck doesn't hold up the archiving)
+                    await asyncio.wait_for(self.sessions.interrupt(rh.sid), timeout=5)
+                except Exception:
+                    log.debug("interrupting the reviewer %s failed", rh.sid, exc_info=True)
+            await self.sessions.close(rh.sid)
+        self._pump()  # its place goes to the next round waiting
 
     async def forget(self, wsid: str) -> None:
         """The agent was deleted: so are its review session and rounds."""

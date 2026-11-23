@@ -193,12 +193,12 @@ A project-centric workbench for coding agents — Claude Code, Codex, Antigravit
    branch), another worktree or a new one (a branch that still exists is checked out again), the
    new-agent page's menu — then moves the same conversation there and tells the agent (Claude: the
    transcript moves under the new directory; Codex: the thread resumes there). A worktree can't be
-   removed while an agent is mid-turn in it. Archiving the last agent of a worktree whose work is
-   committed and merged (into the project's HEAD or the remote's default branch) removes the
-   worktree and its branch, after a snapshot; otherwise the toast says why they were kept. New
-   worktrees get the gitignored files listed in `.worktreeinclude` (gitignore syntax — the file
-   Claude Code and the Codex app read too), e.g. `.env`; an agent in a worktree is told to set up
-   the rest (dependencies, builds) itself.
+   removed while an agent is mid-turn in it. Archiving an agent stops it, and its Code Review Agent's
+   round if one runs; archiving the last agent of a worktree whose work is committed and merged (into
+   the project's HEAD or the remote's default branch) removes the worktree and its branch, after a
+   snapshot; otherwise the toast says why they were kept. New worktrees get the gitignored files
+   listed in `.worktreeinclude` (gitignore syntax — the file Claude Code and the Codex app read too),
+   e.g. `.env`; an agent in a worktree is told to set up the rest (dependencies, builds) itself.
 
 ## Quick start
 

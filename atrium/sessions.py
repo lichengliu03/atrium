@@ -990,15 +990,17 @@ class SessionManager:
         return backup
 
     async def set_archived(self, project: Project, sid: str, archived: bool) -> dict[str, Any] | None:
-        """Archive (stops the agent) or unarchive. Archiving the last agent of a linked worktree whose
-        work is merged and committed also removes the worktree and its merged branch, after a
-        snapshot. Returns what happened to the worktree, if the agent had one."""
+        """Archive (stops the agent, and its review) or unarchive. Archiving the last agent of a linked
+        worktree whose work is merged and committed also removes the worktree and its merged branch,
+        after a snapshot. Returns what happened to the worktree, if the agent had one."""
         project.set_session_meta(sid, archived=archived)
         if project.board.agent(sid):
             project.board.update_agent(sid, stats={"archived": archived})
         if not archived:
             return None
         await self.close(sid)
+        if project.review:  # its reviewer mid-round would keep the worktree
+            await project.review.put_away(sid)
         try:
             return await self._tidy_worktree(project, sid)
         except gitops.GitError as e:  # archived all the same
